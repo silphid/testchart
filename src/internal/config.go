@@ -50,7 +50,7 @@ func LoadConfig(config *Config) error {
 	config.Release = "release123"
 
 	// Load file data
-	data, err := os.ReadFile("tests/tests.yaml")
+	data, err := os.ReadFile(TestsDir + "/tests.yaml")
 	if err != nil {
 		return err
 	}
