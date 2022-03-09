@@ -1,0 +1,31 @@
+project_name: testchart
+builds:
+  - dir: src
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+archives:
+  - format: tar.gz
+    wrap_in_directory: false
+    replacements:
+      386: i386
+      amd64: x86_64
+checksum:
+  name_template: "checksums.txt"
+snapshot:
+  name_template: "{{ .Tag }}-next"
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+brews:
+  - tap:
+      owner: silphid
+      name: homebrew-testchart
+    homepage: "https://github.com/silphid/testchart"
+    description: "Helm chart unit testing CLI tool"
+    license: "MIT"
