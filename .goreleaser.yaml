@@ -9,11 +9,8 @@ builds:
 archives:
   - format: tar.gz
     wrap_in_directory: false
-    replacements:
-      386: i386
-      amd64: x86_64
 checksum:
-  name_template: "checksums.txt"
+  name_template: checksums.txt
 snapshot:
   name_template: "{{ .Tag }}-next"
 changelog:
@@ -25,7 +22,7 @@ changelog:
 brews:
   - tap:
       owner: silphid
-      name: homebrew-testchart
+      name: homebrew-tap
     homepage: "https://github.com/silphid/testchart"
     description: "Helm chart unit testing CLI tool"
     license: "MIT"

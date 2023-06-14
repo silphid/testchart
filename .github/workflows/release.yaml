@@ -1,0 +1,45 @@
+name: Release
+
+on:
+  push:
+    branches: ["master"]
+
+permissions:
+  contents: write
+      
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Determine version
+        id: version
+        uses: codacy/git-version@2.7.1
+        with:
+          prefix: v
+
+      - name: Setup go environment
+        uses: actions/setup-go@v3.3.1
+        with:
+          go-version-file: go.mod
+          # Used to specify whether caching is needed. Set to true, if you'd like to enable caching.
+          cache: true
+          # Used to specify the path to a dependency file - go.sum
+          cache-dependency-path: go.sum
+
+      - name: Tag commit
+        uses: silphid/actions/tag-commit@v1
+        with:
+          tag: v${{ steps.version.outputs.version }}
+
+      - name: Release
+        uses: goreleaser/goreleaser-action@v4
+        with:
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
