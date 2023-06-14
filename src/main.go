@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -14,10 +14,12 @@ import (
 	"github.com/yannh/kubeconform/pkg/validator"
 	"gopkg.in/yaml.v2"
 	"helm.sh/helm/v3/pkg/action"
-	"helm.sh/helm/v3/pkg/chart"
+	helm "helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/cli"
 )
+
+var version = "v0.0.0"
 
 func main() {
 	var testPath string
@@ -28,7 +30,7 @@ func main() {
 	var ignorePatterns []string
 
 	rootCmd := &cobra.Command{
-		Use:   "chart-tester",
+		Use:   "testchart",
 		Short: "Tests helm charts",
 	}
 
@@ -41,6 +43,7 @@ func main() {
 	runCmd := &cobra.Command{
 		Use:   "run [test1 test2 ...]",
 		Short: "Run unit tests",
+		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runTests(args, testPath, namespace, release, updateFlag, debugFlag, ignorePatterns)
 		},
@@ -49,14 +52,25 @@ func main() {
 	updateCmd := &cobra.Command{
 		Use:   "update [test1 test2 ...]",
 		Short: "Update expected files",
+		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			updateFlag = true
 			return runTests(args, testPath, namespace, release, updateFlag, debugFlag, ignorePatterns)
 		},
 	}
 
+	versionCmd := &cobra.Command{
+		Use:   "version",
+		Short: "Display testchart build version",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Println(version)
+		},
+	}
+
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(updateCmd)
+	rootCmd.AddCommand(versionCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		log.Fatal(err)
@@ -73,7 +87,7 @@ func runTests(args []string, testPath, namespace, release string, updateFlag, de
 	if len(args) > 0 {
 		testNames = args
 	} else {
-		files, err := ioutil.ReadDir(testPath)
+		files, err := os.ReadDir(testPath)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -142,7 +156,7 @@ func runTests(args []string, testPath, namespace, release string, updateFlag, de
 	return nil
 }
 
-func runTest(chart *chart.Chart, installAction *action.Install, testPath, testName string, updateFlag, debugFlag bool, ignorePatterns []string) (bool, error) {
+func runTest(chart *helm.Chart, installAction *action.Install, testPath, testName string, updateFlag, debugFlag bool, ignorePatterns []string) (bool, error) {
 	// Load values file
 	valuesPath := filepath.Join(testPath, testName, "values.yaml")
 	values, err := loadValuesFile(valuesPath)
@@ -160,7 +174,7 @@ func runTest(chart *chart.Chart, installAction *action.Install, testPath, testNa
 	// Write actual.yaml in debug mode
 	if debugFlag {
 		actualPath := filepath.Join(testPath, testName, "actual.yaml")
-		err := ioutil.WriteFile(actualPath, []byte(actualStr), 0644)
+		err := os.WriteFile(actualPath, []byte(actualStr), 0644)
 		if err != nil {
 			return false, fmt.Errorf("writing actual.yaml file for debug purposes: %w", err)
 		}
@@ -168,14 +182,14 @@ func runTest(chart *chart.Chart, installAction *action.Install, testPath, testNa
 
 	// Read expected.yaml
 	expectedPath := filepath.Join(testPath, testName, "expected.yaml")
-	expectedBytes, err := ioutil.ReadFile(expectedPath)
+	expectedBytes, err := os.ReadFile(expectedPath)
 	if err != nil {
 		return false, fmt.Errorf("reading expected.yaml file: %w", err)
 	}
 	expectedStr := string(expectedBytes)
 
 	// Compare
-	areEqual, err := compareExpectedAndActualYAML(expectedStr, actualStr, updateFlag, ignorePatterns)
+	areEqual, err := compareExpectedAndActualYAML(expectedStr, actualStr, ignorePatterns)
 	if err != nil {
 		return false, err
 	}
@@ -191,7 +205,7 @@ func runTest(chart *chart.Chart, installAction *action.Install, testPath, testNa
 		if areEqual {
 			fmt.Println("👍 Nothing to update in expected.yaml")
 		} else {
-			err := ioutil.WriteFile(expectedPath, []byte(actualStr), 0644)
+			err := os.WriteFile(expectedPath, []byte(actualStr), 0644)
 			if err != nil {
 				return false, err
 			}
@@ -203,7 +217,7 @@ func runTest(chart *chart.Chart, installAction *action.Install, testPath, testNa
 }
 
 func loadValuesFile(filePath string) (map[string]interface{}, error) {
-	yamlFile, err := ioutil.ReadFile(filePath)
+	yamlFile, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, err
 	}
@@ -223,7 +237,7 @@ func validateManifest(manifest string) (bool, error) {
 		return false, fmt.Errorf("initializing validator: %w", err)
 	}
 
-	readCloser := ioutil.NopCloser(strings.NewReader(manifest))
+	readCloser := io.NopCloser(strings.NewReader(manifest))
 	filePath := "rendered.yaml"
 	isValid := true
 	for i, res := range v.Validate(filePath, readCloser) { // A file might contain multiple resources
@@ -241,7 +255,7 @@ func validateManifest(manifest string) (bool, error) {
 	return isValid, nil
 }
 
-func compareExpectedAndActualYAML(expectedStr, actualStr string, updateFlag bool, ignoreExpressions []string) (bool, error) {
+func compareExpectedAndActualYAML(expectedStr, actualStr string, ignoreExpressions []string) (bool, error) {
 	ignorePatterns, err := compileIgnorePatterns(ignoreExpressions)
 	if err != nil {
 		return false, err
