@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"github.com/imdario/mergo"
+	"helm.sh/helm/v3/pkg/cli"
 	"io"
 	"log"
 	"os"
@@ -16,17 +18,16 @@ import (
 	"helm.sh/helm/v3/pkg/action"
 	helm "helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chart/loader"
-	"helm.sh/helm/v3/pkg/cli"
 )
 
 var version = "v0.0.0"
+var isDebug = false
 
 func main() {
 	var testPath string
 	var namespace string
 	var release string
-	debugFlag := false
-	updateFlag := false
+	isUpdate := false
 	var ignorePatterns []string
 
 	rootCmd := &cobra.Command{
@@ -37,7 +38,7 @@ func main() {
 	rootCmd.PersistentFlags().StringVarP(&testPath, "path", "p", "tests", "Path to tests directory")
 	rootCmd.PersistentFlags().StringVarP(&namespace, "namespace", "n", "my-namespace", "Name of namespace to use for rendering chart")
 	rootCmd.PersistentFlags().StringVarP(&release, "release", "r", "my-release", "Name of release to use for rendering chart")
-	rootCmd.PersistentFlags().BoolVarP(&debugFlag, "debug", "d", false, "Enable debug mode")
+	rootCmd.PersistentFlags().BoolVarP(&isDebug, "debug", "d", false, "Enable debug mode")
 	rootCmd.PersistentFlags().StringSliceVarP(&ignorePatterns, "ignore", "i", []string{}, "Regex specifying lines to ignore (can be specified multiple times)")
 
 	runCmd := &cobra.Command{
@@ -45,7 +46,7 @@ func main() {
 		Short: "Run unit tests",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runTests(args, testPath, namespace, release, updateFlag, debugFlag, ignorePatterns)
+			return runTests(args, testPath, namespace, release, isUpdate, ignorePatterns)
 		},
 	}
 
@@ -54,8 +55,8 @@ func main() {
 		Short: "Update expected files",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			updateFlag = true
-			return runTests(args, testPath, namespace, release, updateFlag, debugFlag, ignorePatterns)
+			isUpdate = true
+			return runTests(args, testPath, namespace, release, isUpdate, ignorePatterns)
 		},
 	}
 
@@ -77,7 +78,7 @@ func main() {
 	}
 }
 
-func runTests(args []string, testPath, namespace, release string, updateFlag, debugFlag bool, ignorePatterns []string) error {
+func runTests(args []string, testPath, namespace, release string, isUpdate bool, ignorePatterns []string) error {
 	if _, err := os.Stat(testPath); os.IsNotExist(err) {
 		fmt.Println("No tests found")
 		return nil
@@ -99,19 +100,6 @@ func runTests(args []string, testPath, namespace, release string, updateFlag, de
 		}
 	}
 
-	settings := cli.New()
-	actionConfig := new(action.Configuration)
-	debugLog := func(format string, v ...interface{}) {
-		fmt.Printf(format, v)
-	}
-	if !debugFlag {
-		debugLog = nil
-	}
-	err := actionConfig.Init(settings.RESTClientGetter(), settings.Namespace(), "memory", debugLog)
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	// Load chart
 	chartPath, err := filepath.Abs(".")
 	if err != nil {
@@ -122,46 +110,106 @@ func runTests(args []string, testPath, namespace, release string, updateFlag, de
 		return err
 	}
 
-	// Create install action
-	installAction := action.NewInstall(actionConfig)
-	installAction.Namespace = namespace
-	installAction.ReleaseName = release
-	installAction.IncludeCRDs = true
-	installAction.ClientOnly = true
-
 	areAllSuccess := true
 	for _, testName := range testNames {
 		fmt.Println("========================================")
 		fmt.Printf("🧪 %s\n", testName)
 
-		isSuccess, err := runTest(chart, installAction, testPath, testName, updateFlag, debugFlag, ignorePatterns)
+		isSuccess, err := runTest(chart, namespace, release, testPath, testName, isUpdate, ignorePatterns)
 		if err != nil {
 			return fmt.Errorf("running test %s: %w", testName, err)
 		}
-		if isSuccess {
-			fmt.Println("✅  Passed")
+		areAllSuccess = areAllSuccess && isSuccess
+		if isUpdate {
+			if isSuccess {
+				fmt.Println("👍 Nothing to update in expected file")
+			} else {
+				fmt.Println("📝 Updated expected file")
+			}
 		} else {
-			areAllSuccess = false
-			fmt.Println("❌  Failed")
+			if isSuccess {
+				fmt.Println("✅  Passed")
+			} else {
+				fmt.Println("❌  Failed")
+			}
 		}
 	}
 
 	fmt.Println("========================================")
-	if areAllSuccess {
-		fmt.Println("✅  All tests succeeded!")
+	if isUpdate {
+		if areAllSuccess {
+			fmt.Println("👍 Nothing to update in any expected file")
+		} else {
+			fmt.Println("📝 Updated some expected files")
+		}
 	} else {
-		fmt.Println("❌  Some tests failed")
+		if areAllSuccess {
+			fmt.Println("✅  All tests succeeded!")
+		} else {
+			fmt.Println("❌  Some tests failed")
+		}
 	}
 
 	return nil
 }
 
-func runTest(chart *helm.Chart, installAction *action.Install, testPath, testName string, updateFlag, debugFlag bool, ignorePatterns []string) (bool, error) {
-	// Load values file
-	valuesPath := filepath.Join(testPath, testName, "values.yaml")
-	values, err := loadValuesFile(valuesPath)
+func runTest(chart *helm.Chart, namespace, releaseName, testPath, testName string, isUpdate bool, ignorePatterns []string) (bool, error) {
+	// Create action config
+	settings := cli.New()
+	actionConfig := new(action.Configuration)
+	debugLog := func(format string, v ...interface{}) {
+		fmt.Printf(format, v)
+	}
+	if !isDebug {
+		debugLog = nil
+	}
+	err := actionConfig.Init(settings.RESTClientGetter(), settings.Namespace(), "memory", debugLog)
 	if err != nil {
-		return false, fmt.Errorf("parsing values file %q: %w", valuesPath, err)
+		log.Fatal(err)
+	}
+
+	// Create install action
+	installAction := action.NewInstall(actionConfig)
+	installAction.Namespace = namespace
+	installAction.ReleaseName = releaseName
+	installAction.IncludeCRDs = true
+	installAction.ClientOnly = true
+
+	// Load chart's default values file, if any
+	defaultValuesPath := "values.yaml"
+	var defaultValues map[string]interface{}
+	if _, err := os.Stat(defaultValuesPath); !os.IsNotExist(err) {
+		debug("Using chart default values file as base")
+		defaultValues, err = loadValuesFile(defaultValuesPath)
+		if err != nil {
+			return false, fmt.Errorf("parsing default values file %q: %w", defaultValuesPath, err)
+		}
+	} else {
+		debug("No chart default values file found")
+	}
+
+	// Load test values file
+	testValuesPath := filepath.Join(testPath, testName, "values.yaml")
+	testValues, err := loadValuesFile(testValuesPath)
+	if err != nil {
+		return false, fmt.Errorf("parsing test values file %q: %w", testValuesPath, err)
+	}
+
+	// Merge values
+	values := defaultValues
+	err = mergo.Merge(&values, testValues)
+	if err != nil {
+		return false, fmt.Errorf("merging test values onto chart default values: %w", err)
+	}
+	values = standardizeTree(values).(map[string]interface{})
+	if isDebug {
+		valuesYaml, err := yaml.Marshal(values)
+		if err != nil {
+			return false, fmt.Errorf("serializing values to yaml: %w", err)
+		}
+		fmt.Println("📜 Values:")
+		fmt.Println(string(valuesYaml))
+		fmt.Println("-----------")
 	}
 
 	// Render chart templates
@@ -172,7 +220,7 @@ func runTest(chart *helm.Chart, installAction *action.Install, testPath, testNam
 	actualStr := release.Manifest
 
 	// Write actual.yaml in debug mode
-	if debugFlag {
+	if isDebug {
 		actualPath := filepath.Join(testPath, testName, "actual.yaml")
 		err := os.WriteFile(actualPath, []byte(actualStr), 0644)
 		if err != nil {
@@ -201,19 +249,39 @@ func runTest(chart *helm.Chart, installAction *action.Install, testPath, testNam
 	}
 
 	// Update expected?
-	if updateFlag {
-		if areEqual {
-			fmt.Println("👍 Nothing to update in expected.yaml")
-		} else {
-			err := os.WriteFile(expectedPath, []byte(actualStr), 0644)
-			if err != nil {
-				return false, err
-			}
-			fmt.Println("📝 Updated expected.yaml")
+	if isUpdate && !areEqual {
+		err := os.WriteFile(expectedPath, []byte(actualStr), 0644)
+		if err != nil {
+			return false, err
 		}
 	}
 
 	return areEqual && isValid, nil
+}
+
+// standardizeTree converts a tree of interface{} to a tree of map[string]interface{}
+func standardizeTree(node interface{}) interface{} {
+	switch v := node.(type) {
+	case map[interface{}]interface{}:
+		newNode := make(map[string]interface{})
+		for key, value := range v {
+			strKey := key.(string)
+			newNode[strKey] = standardizeTree(value)
+		}
+		return newNode
+	case map[string]interface{}:
+		for key, value := range v {
+			v[key] = standardizeTree(value)
+		}
+		return v
+	case []interface{}:
+		for i, elem := range v {
+			v[i] = standardizeTree(elem)
+		}
+		return v
+	default:
+		return v
+	}
 }
 
 func loadValuesFile(filePath string) (map[string]interface{}, error) {
@@ -232,7 +300,7 @@ func loadValuesFile(filePath string) (map[string]interface{}, error) {
 }
 
 func validateManifest(manifest string) (bool, error) {
-	v, err := validator.New(nil, validator.Opts{Strict: true})
+	v, err := validator.New(nil, validator.Opts{Strict: true, IgnoreMissingSchemas: true})
 	if err != nil {
 		return false, fmt.Errorf("initializing validator: %w", err)
 	}
@@ -313,4 +381,10 @@ func compileIgnorePatterns(ignoreExpressions []string) ([]*regexp.Regexp, error)
 		ignorePatterns = append(ignorePatterns, pattern)
 	}
 	return ignorePatterns, nil
+}
+
+func debug(format string, a ...interface{}) {
+	if isDebug {
+		fmt.Printf(format+"\n", a...)
+	}
 }
