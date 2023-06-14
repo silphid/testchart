@@ -34,7 +34,7 @@ jobs:
       - name: Tag commit
         uses: silphid/actions/tag-commit@v1
         with:
-          tag: v${{ steps.version.outputs.version }}
+          tag: ${{ steps.version.outputs.version }}
 
       - name: Release
         uses: goreleaser/goreleaser-action@v4
