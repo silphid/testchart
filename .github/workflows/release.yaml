@@ -18,16 +18,7 @@ jobs:
 
       - name: Determine version
         id: version
-        uses: codacy/git-version@2.7.1
-        with:
-          prefix: v
-
-      - name: Determine raw version
-        id: raw-version
-        shell: bash
-        run: |-
-          version=${{ steps.version.outputs.version }}
-          echo "raw-version=${version#v}" >> $GITHUB_OUTPUT
+        uses: silphid/actions/get-version@master
 
       - name: Setup go environment
         uses: actions/setup-go@v3.3.1
@@ -39,7 +30,7 @@ jobs:
       - name: Tag commit
         uses: silphid/actions/tag-commit@v1
         with:
-          tag: ${{ steps.version.outputs.version }}
+          tag: ${{ steps.version.outputs.git-tag }}
 
       - name: Release
         uses: goreleaser/goreleaser-action@v4
@@ -57,7 +48,7 @@ jobs:
           token: ${{ secrets.GH_TOKEN }}
           fetch-depth: 0
             
-      - name: Promote in silphid/actions/test-chart action
+      - name: Promote in silphid/actions/test-chart
         uses: silphid/actions/replace-in-repo@master
         with:
           work-dir: silphid-actions
@@ -65,5 +56,5 @@ jobs:
           search: |-
             (github.com/silphid/testchart/releases/download/v)(\d+\.\d+\.\d+)(.+)(\d+\.\d+\.\d+)
           replace: |-
-            $1${{ steps.raw-version.outputs.raw-version }}$3${{ steps.raw-version.outputs.raw-version }}
-          message: "Promote test-chart action to use testchart v${{ steps.raw-version.outputs.raw-version }}"
+            $1${{ steps.version.outputs.version }}$3${{ steps.version.outputs.version }}
+          message: "Promote test-chart action to use testchart v${{ steps.version.outputs.version }}"
