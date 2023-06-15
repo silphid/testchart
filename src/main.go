@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/containerd/containerd/pkg/cri/util"
 	"github.com/imdario/mergo"
 	"helm.sh/helm/v3/pkg/cli"
 	"io"
@@ -146,16 +147,6 @@ func runTest(builder Builder, chart *helm.Chart, namespace, releaseName, testPat
 	installAction.IncludeCRDs = true
 	installAction.ClientOnly = true
 
-	// Load chart's default values file, if any
-	defaultValuesPath := "values.yaml"
-	var defaultValues map[string]interface{}
-	if _, err := os.Stat(defaultValuesPath); !os.IsNotExist(err) {
-		defaultValues, err = loadValuesFile(defaultValuesPath)
-		if err != nil {
-			return fmt.Errorf("parsing default values file %q: %w", defaultValuesPath, err)
-		}
-	}
-
 	// Load test values file
 	testValuesPath := filepath.Join(testPath, testName, "values.yaml")
 	testValues, err := loadValuesFile(testValuesPath)
@@ -163,8 +154,12 @@ func runTest(builder Builder, chart *helm.Chart, namespace, releaseName, testPat
 		return fmt.Errorf("parsing test values file %q: %w", testValuesPath, err)
 	}
 
-	// Merge values
-	values := defaultValues
+	// Coalesce test values onto chart default values
+	var values map[string]interface{}
+	err = util.DeepCopy(&values, chart.Values)
+	if err != nil {
+		return fmt.Errorf("copying chart default values: %w", err)
+	}
 	err = mergo.Merge(&values, testValues, mergo.WithOverride)
 	if err != nil {
 		return fmt.Errorf("merging test values onto chart default values: %w", err)
