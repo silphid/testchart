@@ -43,3 +43,20 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+
+      - name: Check out silphid/actions
+        uses: actions/checkout@v3
+        with:
+          path: test-chart
+          fetch-depth: 0
+
+      - name: Promote in silphid/actions/test-chart action
+        uses: silphid/actions/replace-in-repo@master
+        with:
+          work-dir: test-chart
+          glob: "test-chart/action.yaml"
+          search: >-
+            (github.com/silphid/testchart/releases/download/v)(\d+\.\d+\.\d+\)(.+)(\d+\.\d+\.\d+\)
+          replace: >-
+            $1${{ steps.version.outputs.version }}$3${{ steps.version.outputs.version }}
+          message: "Promote test-chart action to use testchart v${{ steps.version.outputs.version }}"
