@@ -22,13 +22,18 @@ jobs:
         with:
           prefix: v
 
+      - name: Determine raw version
+        id: raw-version
+        shell: bash
+        run: |-
+          version=${{ steps.version.outputs.version }}
+          echo "raw-version=${version#v}" >> $GITHUB_OUTPUTS
+
       - name: Setup go environment
         uses: actions/setup-go@v3.3.1
         with:
           go-version-file: go.mod
-          # Used to specify whether caching is needed. Set to true, if you'd like to enable caching.
           cache: true
-          # Used to specify the path to a dependency file - go.sum
           cache-dependency-path: go.sum
 
       - name: Tag commit
@@ -50,13 +55,27 @@ jobs:
           path: test-chart
           fetch-depth: 0
 
+      - name: Test presence of action.yaml file
+        run: |
+          if [ -f test-chart/action.yaml ]; then
+            echo "test-chart/action.yaml file found"
+          else
+            echo "test-chart/action.yaml file not found"
+          fi
+          # Use grep to check if the action.yaml file contains the version
+          if grep -q "(github.com/silphid/testchart/releases/download/v)(\d+\.\d+\.\d+)(.+)(\d+\.\d+\.\d+)" test-chart/action.yaml; then
+            echo "test-chart/action.yaml file contains the version"
+          else
+            echo "test-chart/action.yaml file does not contain the version"
+          fi
+
       - name: Promote in silphid/actions/test-chart action
         uses: silphid/actions/replace-in-repo@master
         with:
           work-dir: test-chart
           glob: "test-chart/action.yaml"
-          search: >-
+          search: |-
             (github.com/silphid/testchart/releases/download/v)(\d+\.\d+\.\d+)(.+)(\d+\.\d+\.\d+)
-          replace: >-
+          replace: |-
             $1${{ steps.version.outputs.version }}$3${{ steps.version.outputs.version }}
-          message: "Promote test-chart action to use testchart v${{ steps.version.outputs.version }}"
+          message: "Promote test-chart action to use testchart v${{ steps.raw-version.outputs.raw-version }}"
