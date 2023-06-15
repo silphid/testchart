@@ -27,7 +27,7 @@ jobs:
         shell: bash
         run: |-
           version=${{ steps.version.outputs.version }}
-          echo "raw-version=${version#v}" >> $GITHUB_OUTPUTS
+          echo "raw-version=${version#v}" >> $GITHUB_OUTPUT
 
       - name: Setup go environment
         uses: actions/setup-go@v3.3.1
