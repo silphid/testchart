@@ -2,3 +2,86 @@
 
 Helm chart unit testing CLI tool.
 
+It uses `helm` under the hood (but it has no external dependencies) to render chart in current directory once for each test found in the chart's `tests` sub-directory, using the `values.yaml` file in the test folder as inputs, and comparing the rendered results against the `expected.yaml` file also in the test directory.  The name of each test directory is used as the test name.
+
+# Installation
+
+## Using `homebrew`
+
+To install:
+```bash
+$ brew tap silphid/tap
+$ brew install testchart
+```
+
+To upgrade:
+```bash
+$ brew update
+$ brew upgrade testchart
+```
+
+## Manual installation
+
+Download and install manually from latest release page on GitHub: https://github.com/silphid/testchart/releases/latest
+
+# Usage
+
+```
+$ testchart --help
+
+Tests helm charts
+
+Usage:
+  testchart [command]
+
+Available Commands:
+  completion  Generate the autocompletion script for the specified shell
+  help        Help about any command
+  run         Run unit tests
+  update      Update expected files
+  version     Display testchart build version
+
+Flags:
+  -h, --help               help for testchart
+  -i, --ignore strings     Regex specifying lines to ignore (can be specified multiple times)
+  -n, --namespace string   Name of namespace to use for rendering chart (default "my-namespace")
+  -p, --path string        Path to tests directory (default "tests")
+  -r, --release string     Name of release to use for rendering chart (default "my-release")
+  -s, --save-actual        Saves an actual.yaml file in each test dir for troubleshooting
+  -V, --show-all-values    Shows coalesced values for all tests
+  -v, --show-values        Shows coalesced values for failed tests
+
+Use "testchart [command] --help" for more information about a command.
+```
+
+## Run all tests
+
+To run all tests under chart's `tests` sub-directory:
+
+```bash
+$ testchart run
+```
+
+## Run specific tests
+
+To run specific tests under chart's `tests` sub-directory:
+
+```bash
+$ testchart run test1 test2 ...
+```
+
+## Update all expected files
+
+Watch out, as this will overwrite all tests expected files to match rendered manifests.
+
+```bash
+$ testchart update
+```
+
+## Generate expected file for specific test
+
+To generate the `expected.yaml` for the first time for a new test named `test1`:
+
+```bash
+$ testchart update test1
+```
