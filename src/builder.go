@@ -5,6 +5,7 @@ import (
 	"github.com/hexops/gotextdiff"
 	"github.com/hexops/gotextdiff/myers"
 	"github.com/hexops/gotextdiff/span"
+	"gopkg.in/yaml.v2"
 	"strings"
 )
 
@@ -20,7 +21,9 @@ type Builder interface {
 	AddMissingItem(source, expected string)
 	AddExtraItem(source, actual string)
 
-	EndTest()
+	ShowValues(values map[string]interface{})
+
+	EndTest() error
 
 	EndAllTests()
 	IsSuccessful() bool
@@ -44,6 +47,7 @@ type PrintBuilder struct {
 	areAllSuccessful, isSame, isValid        bool
 	differentItems, missingItems, extraItems []Item
 	validationErrors                         []ValidationError
+	values                                   map[string]interface{}
 	testCount, successCount, failureCount    int
 }
 
@@ -91,7 +95,11 @@ const (
 	separator3 = "———————"
 )
 
-func (pb *PrintBuilder) EndTest() {
+func (pb *PrintBuilder) ShowValues(values map[string]interface{}) {
+	pb.values = values
+}
+
+func (pb *PrintBuilder) EndTest() error {
 	isSuccessful := pb.isSame && pb.isValid
 	if isSuccessful {
 		pb.successCount++
@@ -164,7 +172,9 @@ func (pb *PrintBuilder) EndTest() {
 	}
 
 	if !pb.isValid {
-		if sections > 0 {
+		if sections < 1 {
+			fmt.Println(separator2)
+		} else {
 			fmt.Println(separator3)
 		}
 		for i, validationError := range pb.validationErrors {
@@ -173,7 +183,23 @@ func (pb *PrintBuilder) EndTest() {
 			}
 			fmt.Printf("🚨 Invalid %q:\n%s\n", validationError.signature, validationError.error)
 		}
+		sections++
 	}
+
+	if pb.values != nil {
+		if sections < 1 {
+			fmt.Println(separator2)
+		} else {
+			fmt.Println(separator3)
+		}
+		valuesYaml, err := yaml.Marshal(pb.values)
+		if err != nil {
+			return fmt.Errorf("serializing values to yaml: %w", err)
+		}
+		fmt.Println("📜 Coalesced values:")
+		fmt.Println(strings.TrimSpace(string(valuesYaml)))
+	}
+	return nil
 }
 
 const (

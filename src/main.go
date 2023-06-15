@@ -20,7 +20,8 @@ import (
 )
 
 var version = "v0.0.0"
-var isDebug = false
+var saveActual = false
+var showValues = false
 
 func main() {
 	var testPath string
@@ -37,7 +38,8 @@ func main() {
 	rootCmd.PersistentFlags().StringVarP(&testPath, "path", "p", "tests", "Path to tests directory")
 	rootCmd.PersistentFlags().StringVarP(&namespace, "namespace", "n", "my-namespace", "Name of namespace to use for rendering chart")
 	rootCmd.PersistentFlags().StringVarP(&release, "release", "r", "my-release", "Name of release to use for rendering chart")
-	rootCmd.PersistentFlags().BoolVarP(&isDebug, "debug", "d", false, "Displays verbose output and saves rendered manifests to actual.yaml files")
+	rootCmd.PersistentFlags().BoolVarP(&saveActual, "save-actual", "s", false, "Saves an actual.yaml file in each test dir for troubleshooting")
+	rootCmd.PersistentFlags().BoolVarP(&showValues, "show-values", "v", false, "Shows coalesced values used for rendering chart")
 	rootCmd.PersistentFlags().StringSliceVarP(&ignorePatterns, "ignore", "i", []string{}, "Regex specifying lines to ignore (can be specified multiple times)")
 
 	runCmd := &cobra.Command{
@@ -132,13 +134,7 @@ func runTest(builder Builder, chart *helm.Chart, namespace, releaseName, testPat
 	// Create action config
 	settings := cli.New()
 	actionConfig := new(action.Configuration)
-	debugLog := func(format string, v ...interface{}) {
-		fmt.Printf("▶️"+format, v)
-	}
-	if !isDebug {
-		debugLog = nil
-	}
-	err := actionConfig.Init(settings.RESTClientGetter(), namespace, "memory", debugLog)
+	err := actionConfig.Init(settings.RESTClientGetter(), namespace, "memory", nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -154,13 +150,10 @@ func runTest(builder Builder, chart *helm.Chart, namespace, releaseName, testPat
 	defaultValuesPath := "values.yaml"
 	var defaultValues map[string]interface{}
 	if _, err := os.Stat(defaultValuesPath); !os.IsNotExist(err) {
-		debug("Using chart default values file as base")
 		defaultValues, err = loadValuesFile(defaultValuesPath)
 		if err != nil {
 			return fmt.Errorf("parsing default values file %q: %w", defaultValuesPath, err)
 		}
-	} else {
-		debug("No chart default values file found")
 	}
 
 	// Load test values file
@@ -172,19 +165,13 @@ func runTest(builder Builder, chart *helm.Chart, namespace, releaseName, testPat
 
 	// Merge values
 	values := defaultValues
-	err = mergo.Merge(&values, testValues)
+	err = mergo.Merge(&values, testValues, mergo.WithOverride)
 	if err != nil {
 		return fmt.Errorf("merging test values onto chart default values: %w", err)
 	}
 	values = standardizeTree(values).(map[string]interface{})
-	if isDebug {
-		valuesYaml, err := yaml.Marshal(values)
-		if err != nil {
-			return fmt.Errorf("serializing values to yaml: %w", err)
-		}
-		fmt.Println("📜 Values:")
-		fmt.Println(string(valuesYaml))
-		fmt.Println("-----------")
+	if showValues {
+		builder.ShowValues(values)
 	}
 
 	// Render chart templates
@@ -194,8 +181,8 @@ func runTest(builder Builder, chart *helm.Chart, namespace, releaseName, testPat
 	}
 	actualManifest := release.Manifest
 
-	// Write actual.yaml in debug mode
-	if isDebug {
+	// Save actual.yaml for troubleshooting purposes
+	if saveActual {
 		actualPath := filepath.Join(testPath, testName, "actual.yaml")
 		err := os.WriteFile(actualPath, []byte(actualManifest), 0644)
 		if err != nil {
@@ -239,8 +226,7 @@ func runTest(builder Builder, chart *helm.Chart, namespace, releaseName, testPat
 		return fmt.Errorf("validating manifest: %w", err)
 	}
 
-	builder.EndTest()
-	return nil
+	return builder.EndTest()
 }
 
 // standardizeTree converts a tree of interface{} to a tree of map[string]interface{}
@@ -333,12 +319,6 @@ func compileIgnorePatterns(ignoreExpressions []string) ([]*regexp.Regexp, error)
 		ignorePatterns = append(ignorePatterns, pattern)
 	}
 	return ignorePatterns, nil
-}
-
-func debug(format string, a ...interface{}) {
-	if isDebug {
-		fmt.Printf(format+"\n", a...)
-	}
 }
 
 func compareManifests(builder Builder, expectedManifest, actualManifest string) bool {
