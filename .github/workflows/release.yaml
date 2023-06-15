@@ -52,15 +52,15 @@ jobs:
       - name: Check out silphid/actions
         uses: actions/checkout@v3
         with:
-          path: test-chart
+          path: silphid-actions
           fetch-depth: 0
 
       - name: Test presence of action.yaml file
         run: |
+          cd silphid-actions
           echo "pwd: $(pwd)"
           echo "***"
           ls -la
-          echo "***"
 
           if [ -f test-chart/action.yaml ]; then
             echo "test-chart/action.yaml file found"
@@ -77,7 +77,7 @@ jobs:
       - name: Promote in silphid/actions/test-chart action
         uses: silphid/actions/replace-in-repo@master
         with:
-          work-dir: test-chart
+          work-dir: silphid-actions
           glob: "test-chart/action.yaml"
           search: |-
             (github.com/silphid/testchart/releases/download/v)(\d+\.\d+\.\d+)(.+)(\d+\.\d+\.\d+)
