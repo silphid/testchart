@@ -52,28 +52,11 @@ jobs:
       - name: Check out silphid/actions
         uses: actions/checkout@v3
         with:
+          repository: silphid/actions
           path: silphid-actions
+          token: ${{ secrets.GH_TOKEN }}
           fetch-depth: 0
-
-      - name: Test presence of action.yaml file
-        run: |
-          cd silphid-actions
-          echo "pwd: $(pwd)"
-          echo "***"
-          ls -la
-
-          if [ -f test-chart/action.yaml ]; then
-            echo "test-chart/action.yaml file found"
-          else
-            echo "test-chart/action.yaml file not found"
-          fi
-          # Use grep to check if the action.yaml file contains the version
-          if grep -q "(github.com/silphid/testchart/releases/download/v)(\d+\.\d+\.\d+)(.+)(\d+\.\d+\.\d+)" test-chart/action.yaml; then
-            echo "test-chart/action.yaml file contains the version"
-          else
-            echo "test-chart/action.yaml file does not contain the version"
-          fi
-
+            
       - name: Promote in silphid/actions/test-chart action
         uses: silphid/actions/replace-in-repo@master
         with:
