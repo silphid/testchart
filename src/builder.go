@@ -157,7 +157,7 @@ func (pb *PrintBuilder) EndTest() {
 				if i > 0 {
 					fmt.Println(separator3)
 				}
-				fmt.Printf("🫥️Missing %q:\n%s\n", missingItem.source, missingItem.expected)
+				fmt.Printf("🫥️ Missing %q:\n%s\n", missingItem.source, missingItem.expected)
 			}
 			sections++
 		}

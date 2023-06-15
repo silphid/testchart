@@ -24,7 +24,7 @@ changelog:
 brews:
   - tap:
       owner: silphid
-      name: homebrew-tap
+      name: homebrew-testchart
     homepage: "https://github.com/silphid/testchart"
     description: "Helm chart unit testing CLI tool"
     license: "MIT"
