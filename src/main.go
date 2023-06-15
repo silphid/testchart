@@ -1,9 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
-	"github.com/containerd/containerd/pkg/cri/util"
-	"github.com/imdario/mergo"
+	"helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/chartutil"
 	"helm.sh/helm/v3/pkg/cli"
 	"io"
 	"log"
@@ -16,13 +17,13 @@ import (
 	"github.com/yannh/kubeconform/pkg/validator"
 	"gopkg.in/yaml.v2"
 	"helm.sh/helm/v3/pkg/action"
-	helm "helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chart/loader"
 )
 
 var version = "v0.0.0"
 var saveActual = false
 var showValues = false
+var showAllValues = false
 
 func main() {
 	var testPath string
@@ -40,7 +41,8 @@ func main() {
 	rootCmd.PersistentFlags().StringVarP(&namespace, "namespace", "n", "my-namespace", "Name of namespace to use for rendering chart")
 	rootCmd.PersistentFlags().StringVarP(&release, "release", "r", "my-release", "Name of release to use for rendering chart")
 	rootCmd.PersistentFlags().BoolVarP(&saveActual, "save-actual", "s", false, "Saves an actual.yaml file in each test dir for troubleshooting")
-	rootCmd.PersistentFlags().BoolVarP(&showValues, "show-values", "v", false, "Shows coalesced values used for rendering chart")
+	rootCmd.PersistentFlags().BoolVarP(&showValues, "show-values", "v", false, "Shows coalesced values for failed tests")
+	rootCmd.PersistentFlags().BoolVarP(&showAllValues, "show-all-values", "V", false, "Shows coalesced values for all tests")
 	rootCmd.PersistentFlags().StringSliceVarP(&ignorePatterns, "ignore", "i", []string{}, "Regex specifying lines to ignore (can be specified multiple times)")
 
 	runCmd := &cobra.Command{
@@ -80,7 +82,7 @@ func main() {
 	}
 }
 
-func runTests(args []string, testPath, namespace, release string, isUpdate bool, ignorePatterns []string) error {
+func runTests(args []string, testPath, namespace, releaseName string, isUpdate bool, ignorePatterns []string) error {
 	if _, err := os.Stat(testPath); os.IsNotExist(err) {
 		fmt.Println("No tests found")
 		return nil
@@ -102,35 +104,8 @@ func runTests(args []string, testPath, namespace, release string, isUpdate bool,
 		}
 	}
 
-	// Load chart
-	chartPath, err := filepath.Abs(".")
-	if err != nil {
-		return err
-	}
-	chart, err := loader.Load(chartPath)
-	if err != nil {
-		return err
-	}
-
 	builder := NewPrintBuilder(isUpdate)
-	builder.StartAllTests()
-
-	for _, testName := range testNames {
-		err := runTest(builder, chart, namespace, release, testPath, testName, isUpdate, ignorePatterns)
-		if err != nil {
-			return fmt.Errorf("running test %s: %w", testName, err)
-		}
-	}
-
-	builder.EndAllTests()
-	if !builder.IsSuccessful() {
-		os.Exit(1)
-	}
-	return nil
-}
-
-func runTest(builder Builder, chart *helm.Chart, namespace, releaseName, testPath, testName string, isUpdate bool, ignorePatterns []string) error {
-	builder.StartTest(testName)
+	builder.StartAllTests(testNames)
 
 	// Create action config
 	settings := cli.New()
@@ -144,8 +119,37 @@ func runTest(builder Builder, chart *helm.Chart, namespace, releaseName, testPat
 	installAction := action.NewInstall(actionConfig)
 	installAction.Namespace = namespace
 	installAction.ReleaseName = releaseName
+	installAction.DryRun = true
 	installAction.IncludeCRDs = true
 	installAction.ClientOnly = true
+	installAction.Replace = true
+
+	// Load chart
+	chartPath, err := filepath.Abs(".")
+	if err != nil {
+		return fmt.Errorf("getting chart path: %w", err)
+	}
+	theChart, err := loader.Load(chartPath)
+	if err != nil {
+		return fmt.Errorf("loading chart: %w", err)
+	}
+
+	for _, testName := range testNames {
+		err := runTest(builder, theChart, installAction, testPath, testName, isUpdate, ignorePatterns)
+		if err != nil {
+			return fmt.Errorf("running test %s: %w", testName, err)
+		}
+	}
+
+	builder.EndAllTests()
+	if !builder.IsSuccessful() {
+		os.Exit(1)
+	}
+	return nil
+}
+
+func runTest(builder Builder, theChart *chart.Chart, installAction *action.Install, testPath, testName string, isUpdate bool, ignorePatterns []string) error {
+	builder.StartTest(testName)
 
 	// Load test values file
 	testValuesPath := filepath.Join(testPath, testName, "values.yaml")
@@ -154,32 +158,42 @@ func runTest(builder Builder, chart *helm.Chart, namespace, releaseName, testPat
 		return fmt.Errorf("parsing test values file %q: %w", testValuesPath, err)
 	}
 
-	// Coalesce test values onto chart default values
-	var values map[string]interface{}
-	err = util.DeepCopy(&values, chart.Values)
-	if err != nil {
-		return fmt.Errorf("copying chart default values: %w", err)
-	}
-	err = mergo.Merge(&values, testValues, mergo.WithOverride)
+	testValues = standardizeTree(testValues)
 	if err != nil {
 		return fmt.Errorf("merging test values onto chart default values: %w", err)
 	}
-	values = standardizeTree(values).(map[string]interface{})
-	if showValues {
-		builder.ShowValues(values)
-	}
+
+	// Show coalesced values
+	builder.ShowValues(func() (string, error) {
+		values, err := chartutil.ToRenderValues(theChart, testValues, chartutil.ReleaseOptions{Name: installAction.ReleaseName, Namespace: installAction.Namespace}, nil)
+		if err != nil {
+			return "", fmt.Errorf("coalescing test values onto chart default values: %w", err)
+		}
+		values = values["Values"].(chartutil.Values)
+		valuesYaml, err := yaml.Marshal(values)
+		if err != nil {
+			return "", fmt.Errorf("serializing values to yaml: %w", err)
+		}
+		return strings.TrimSpace(string(valuesYaml)), nil
+	})
 
 	// Render chart templates
-	release, err := installAction.Run(chart, values)
+	release, err := installAction.Run(theChart, testValues)
 	if err != nil {
 		return err
 	}
-	actualManifest := release.Manifest
+
+	// Combine regular manifests and hook manifests
+	var manifests bytes.Buffer
+	_, _ = fmt.Fprintln(&manifests, strings.TrimSpace(release.Manifest))
+	for _, m := range release.Hooks {
+		_, _ = fmt.Fprintf(&manifests, "---\n# Source: %s\n%s\n", m.Path, m.Manifest)
+	}
 
 	// Save actual.yaml for troubleshooting purposes
 	if saveActual {
 		actualPath := filepath.Join(testPath, testName, "actual.yaml")
-		err := os.WriteFile(actualPath, []byte(actualManifest), 0644)
+		err := os.WriteFile(actualPath, manifests.Bytes(), 0644)
 		if err != nil {
 			return fmt.Errorf("writing actual.yaml file for debug purposes: %w", err)
 		}
@@ -198,7 +212,7 @@ func runTest(builder Builder, chart *helm.Chart, namespace, releaseName, testPat
 	if err != nil {
 		return fmt.Errorf("compiling ignore patterns: %w", err)
 	}
-	actualManifest = removeLinesMatchingPatterns(actualManifest, ignoreExpressions)
+	actualManifest := removeLinesMatchingPatterns(manifests.String(), ignoreExpressions)
 	expectedManifest = removeLinesMatchingPatterns(expectedManifest, ignoreExpressions)
 
 	// Compare
@@ -225,23 +239,27 @@ func runTest(builder Builder, chart *helm.Chart, namespace, releaseName, testPat
 }
 
 // standardizeTree converts a tree of interface{} to a tree of map[string]interface{}
-func standardizeTree(node interface{}) interface{} {
+func standardizeTree(node map[string]interface{}) map[string]interface{} {
+	return standardizeNode(node).(map[string]interface{})
+}
+
+func standardizeNode(node interface{}) interface{} {
 	switch v := node.(type) {
 	case map[interface{}]interface{}:
-		newNode := make(map[string]interface{})
+		newNode := map[string]interface{}{}
 		for key, value := range v {
 			strKey := key.(string)
-			newNode[strKey] = standardizeTree(value)
+			newNode[strKey] = standardizeNode(value)
 		}
 		return newNode
 	case map[string]interface{}:
 		for key, value := range v {
-			v[key] = standardizeTree(value)
+			v[key] = standardizeNode(value)
 		}
 		return v
 	case []interface{}:
 		for i, elem := range v {
-			v[i] = standardizeTree(elem)
+			v[i] = standardizeNode(elem)
 		}
 		return v
 	default:

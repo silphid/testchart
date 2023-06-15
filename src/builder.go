@@ -5,12 +5,11 @@ import (
 	"github.com/hexops/gotextdiff"
 	"github.com/hexops/gotextdiff/myers"
 	"github.com/hexops/gotextdiff/span"
-	"gopkg.in/yaml.v2"
 	"strings"
 )
 
 type Builder interface {
-	StartAllTests()
+	StartAllTests(names []string)
 
 	StartTest(name string)
 
@@ -21,7 +20,7 @@ type Builder interface {
 	AddMissingItem(source, expected string)
 	AddExtraItem(source, actual string)
 
-	ShowValues(values map[string]interface{})
+	ShowValues(getValuesYaml func() (string, error))
 
 	EndTest() error
 
@@ -44,15 +43,24 @@ func NewPrintBuilder(isUpdate bool) *PrintBuilder {
 type PrintBuilder struct {
 	name                                     string
 	isUpdate                                 bool
-	areAllSuccessful, isSame, isValid        bool
+	isSame, isValid                          bool
 	differentItems, missingItems, extraItems []Item
 	validationErrors                         []ValidationError
-	values                                   map[string]interface{}
-	testCount, successCount, failureCount    int
+	getValuesYaml                            func() (string, error)
+	testCount, successCount                  int
+	longestName                              int
 }
 
-func (pb *PrintBuilder) StartAllTests() {
-	pb.areAllSuccessful = true
+func (pb *PrintBuilder) StartAllTests(names []string) {
+	pb.testCount = 0
+	pb.successCount = 0
+
+	// Calculate longest name
+	for _, name := range names {
+		if len(name) > pb.longestName {
+			pb.longestName = len(name)
+		}
+	}
 }
 
 func (pb *PrintBuilder) StartTest(name string) {
@@ -68,13 +76,11 @@ func (pb *PrintBuilder) StartTest(name string) {
 
 func (pb *PrintBuilder) SetTestComparisonResult(isSame bool) {
 	pb.isSame = isSame
-	pb.areAllSuccessful = pb.areAllSuccessful && isSame
 }
 
 func (pb *PrintBuilder) AddValidationError(signature, error string) {
 	pb.validationErrors = append(pb.validationErrors, ValidationError{signature, error})
 	pb.isValid = false
-	pb.areAllSuccessful = false
 }
 
 func (pb *PrintBuilder) AddDifferentItem(source, expected, actual string) {
@@ -95,34 +101,38 @@ const (
 	separator3 = "———————"
 )
 
-func (pb *PrintBuilder) ShowValues(values map[string]interface{}) {
-	pb.values = values
+func (pb *PrintBuilder) ShowValues(getValuesYaml func() (string, error)) {
+	pb.getValuesYaml = getValuesYaml
 }
 
 func (pb *PrintBuilder) EndTest() error {
 	isSuccessful := pb.isSame && pb.isValid
 	if isSuccessful {
 		pb.successCount++
-	} else {
-		pb.failureCount++
 	}
 
 	fmt.Println(separator1)
 	fmt.Printf("🧪 %s", pb.name)
 
+	// Add padding to align the results
+	padding := (pb.longestName - len(pb.name)) + 1
+	for i := 0; i < padding; i++ {
+		fmt.Print(" ")
+	}
+
 	if isSuccessful {
 		if pb.isUpdate {
-			fmt.Println(" 👍 Nothing to update in expected file")
+			fmt.Println("👍 Nothing to update in expected file")
 		} else {
-			fmt.Println(" ✅  Passed")
+			fmt.Println("✅  Passed")
 		}
 	} else {
 		if pb.isUpdate {
-			fmt.Println(" 📝 Updated expected file")
+			fmt.Println("📝 Updated expected file")
 		} else {
-			fmt.Printf(" 💔 Failed")
+			fmt.Printf("💔 Failed")
 			if !pb.isValid {
-				fmt.Printf(" 👮 Invalid")
+				fmt.Printf("👮 Invalid")
 			}
 			fmt.Printf("\n")
 		}
@@ -186,18 +196,19 @@ func (pb *PrintBuilder) EndTest() error {
 		sections++
 	}
 
-	if pb.values != nil {
+	// Show values for all or only failed tests
+	if showAllValues || (showValues && (!pb.isSame || !pb.isValid)) {
 		if sections < 1 {
 			fmt.Println(separator2)
 		} else {
 			fmt.Println(separator3)
 		}
-		valuesYaml, err := yaml.Marshal(pb.values)
+		valuesYaml, err := pb.getValuesYaml()
 		if err != nil {
-			return fmt.Errorf("serializing values to yaml: %w", err)
+			return fmt.Errorf("failed to get values yaml: %w", err)
 		}
 		fmt.Println("📜 Coalesced values:")
-		fmt.Println(strings.TrimSpace(string(valuesYaml)))
+		fmt.Println(valuesYaml)
 	}
 	return nil
 }
@@ -233,14 +244,14 @@ func (pb *PrintBuilder) EndAllTests() {
 	fmt.Println(separator1)
 	if pb.testCount == 0 {
 		fmt.Println("🤷 No tests were run")
-	} else if pb.areAllSuccessful {
-		fmt.Printf("✅  All %d tests passed\n", pb.testCount)
+	} else if pb.IsSuccessful() {
+		fmt.Printf("🌈🦄☀️  All %d tests passed\n", pb.testCount)
 	} else {
-		fmt.Printf("❌  %d out of %d tests failed\n", pb.failureCount, pb.testCount)
+		fmt.Printf("🔥👺🧨  %d tests failed out of %d\n", pb.testCount-pb.successCount, pb.testCount)
 	}
 	fmt.Println(separator1)
 }
 
 func (pb *PrintBuilder) IsSuccessful() bool {
-	return pb.areAllSuccessful
+	return pb.successCount == pb.testCount
 }
