@@ -1,0 +1,15 @@
+---
+# Source: invalid/templates/service1.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-release-service1
+  namespace: my-namespace
+spec:
+  selector:
+    app: my-release
+    version: v1
+  ports:
+    - name: my-service
+      port: 1234
+      targetPort: 1234

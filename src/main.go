@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/sergi/go-diff/diffmatchpatch"
 	"github.com/spf13/cobra"
 	"github.com/yannh/kubeconform/pkg/validator"
 	"gopkg.in/yaml.v2"
@@ -38,7 +37,7 @@ func main() {
 	rootCmd.PersistentFlags().StringVarP(&testPath, "path", "p", "tests", "Path to tests directory")
 	rootCmd.PersistentFlags().StringVarP(&namespace, "namespace", "n", "my-namespace", "Name of namespace to use for rendering chart")
 	rootCmd.PersistentFlags().StringVarP(&release, "release", "r", "my-release", "Name of release to use for rendering chart")
-	rootCmd.PersistentFlags().BoolVarP(&isDebug, "debug", "d", false, "Enable debug mode")
+	rootCmd.PersistentFlags().BoolVarP(&isDebug, "debug", "d", false, "Displays verbose output and saves rendered manifests to actual.yaml files")
 	rootCmd.PersistentFlags().StringSliceVarP(&ignorePatterns, "ignore", "i", []string{}, "Regex specifying lines to ignore (can be specified multiple times)")
 
 	runCmd := &cobra.Command{
@@ -110,60 +109,36 @@ func runTests(args []string, testPath, namespace, release string, isUpdate bool,
 		return err
 	}
 
-	areAllSuccess := true
-	for _, testName := range testNames {
-		fmt.Println("========================================")
-		fmt.Printf("🧪 %s\n", testName)
+	builder := NewPrintBuilder(isUpdate)
+	builder.StartAllTests()
 
-		isSuccess, err := runTest(chart, namespace, release, testPath, testName, isUpdate, ignorePatterns)
+	for _, testName := range testNames {
+		err := runTest(builder, chart, namespace, release, testPath, testName, isUpdate, ignorePatterns)
 		if err != nil {
 			return fmt.Errorf("running test %s: %w", testName, err)
 		}
-		areAllSuccess = areAllSuccess && isSuccess
-		if isUpdate {
-			if isSuccess {
-				fmt.Println("👍 Nothing to update in expected file")
-			} else {
-				fmt.Println("📝 Updated expected file")
-			}
-		} else {
-			if isSuccess {
-				fmt.Println("✅  Passed")
-			} else {
-				fmt.Println("❌  Failed")
-			}
-		}
 	}
 
-	fmt.Println("========================================")
-	if isUpdate {
-		if areAllSuccess {
-			fmt.Println("👍 Nothing to update in any expected file")
-		} else {
-			fmt.Println("📝 Updated some expected files")
-		}
-	} else {
-		if areAllSuccess {
-			fmt.Println("✅  All tests succeeded!")
-		} else {
-			fmt.Println("❌  Some tests failed")
-		}
+	builder.EndAllTests()
+	if !builder.IsSuccessful() {
+		os.Exit(1)
 	}
-
 	return nil
 }
 
-func runTest(chart *helm.Chart, namespace, releaseName, testPath, testName string, isUpdate bool, ignorePatterns []string) (bool, error) {
+func runTest(builder Builder, chart *helm.Chart, namespace, releaseName, testPath, testName string, isUpdate bool, ignorePatterns []string) error {
+	builder.StartTest(testName)
+
 	// Create action config
 	settings := cli.New()
 	actionConfig := new(action.Configuration)
 	debugLog := func(format string, v ...interface{}) {
-		fmt.Printf(format, v)
+		fmt.Printf("▶️"+format, v)
 	}
 	if !isDebug {
 		debugLog = nil
 	}
-	err := actionConfig.Init(settings.RESTClientGetter(), settings.Namespace(), "memory", debugLog)
+	err := actionConfig.Init(settings.RESTClientGetter(), namespace, "memory", debugLog)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -182,7 +157,7 @@ func runTest(chart *helm.Chart, namespace, releaseName, testPath, testName strin
 		debug("Using chart default values file as base")
 		defaultValues, err = loadValuesFile(defaultValuesPath)
 		if err != nil {
-			return false, fmt.Errorf("parsing default values file %q: %w", defaultValuesPath, err)
+			return fmt.Errorf("parsing default values file %q: %w", defaultValuesPath, err)
 		}
 	} else {
 		debug("No chart default values file found")
@@ -192,20 +167,20 @@ func runTest(chart *helm.Chart, namespace, releaseName, testPath, testName strin
 	testValuesPath := filepath.Join(testPath, testName, "values.yaml")
 	testValues, err := loadValuesFile(testValuesPath)
 	if err != nil {
-		return false, fmt.Errorf("parsing test values file %q: %w", testValuesPath, err)
+		return fmt.Errorf("parsing test values file %q: %w", testValuesPath, err)
 	}
 
 	// Merge values
 	values := defaultValues
 	err = mergo.Merge(&values, testValues)
 	if err != nil {
-		return false, fmt.Errorf("merging test values onto chart default values: %w", err)
+		return fmt.Errorf("merging test values onto chart default values: %w", err)
 	}
 	values = standardizeTree(values).(map[string]interface{})
 	if isDebug {
 		valuesYaml, err := yaml.Marshal(values)
 		if err != nil {
-			return false, fmt.Errorf("serializing values to yaml: %w", err)
+			return fmt.Errorf("serializing values to yaml: %w", err)
 		}
 		fmt.Println("📜 Values:")
 		fmt.Println(string(valuesYaml))
@@ -215,16 +190,16 @@ func runTest(chart *helm.Chart, namespace, releaseName, testPath, testName strin
 	// Render chart templates
 	release, err := installAction.Run(chart, values)
 	if err != nil {
-		return false, err
+		return err
 	}
-	actualStr := release.Manifest
+	actualManifest := release.Manifest
 
 	// Write actual.yaml in debug mode
 	if isDebug {
 		actualPath := filepath.Join(testPath, testName, "actual.yaml")
-		err := os.WriteFile(actualPath, []byte(actualStr), 0644)
+		err := os.WriteFile(actualPath, []byte(actualManifest), 0644)
 		if err != nil {
-			return false, fmt.Errorf("writing actual.yaml file for debug purposes: %w", err)
+			return fmt.Errorf("writing actual.yaml file for debug purposes: %w", err)
 		}
 	}
 
@@ -232,31 +207,40 @@ func runTest(chart *helm.Chart, namespace, releaseName, testPath, testName strin
 	expectedPath := filepath.Join(testPath, testName, "expected.yaml")
 	expectedBytes, err := os.ReadFile(expectedPath)
 	if err != nil {
-		return false, fmt.Errorf("reading expected.yaml file: %w", err)
+		return fmt.Errorf("reading expected.yaml file: %w", err)
 	}
-	expectedStr := string(expectedBytes)
+	expectedManifest := string(expectedBytes)
+
+	// Filter manifests for ignored patterns
+	ignoreExpressions, err := compileIgnorePatterns(ignorePatterns)
+	if err != nil {
+		return fmt.Errorf("compiling ignore patterns: %w", err)
+	}
+	actualManifest = removeLinesMatchingPatterns(actualManifest, ignoreExpressions)
+	expectedManifest = removeLinesMatchingPatterns(expectedManifest, ignoreExpressions)
 
 	// Compare
-	areEqual, err := compareExpectedAndActualYAML(expectedStr, actualStr, ignorePatterns)
-	if err != nil {
-		return false, err
-	}
-
-	// Validate
-	isValid, err := validateManifest(release.Manifest)
-	if err != nil {
-		return false, err
-	}
+	isEqual := compareManifests(builder, expectedManifest, actualManifest)
+	builder.SetTestComparisonResult(isEqual)
 
 	// Update expected?
-	if isUpdate && !areEqual {
-		err := os.WriteFile(expectedPath, []byte(actualStr), 0644)
-		if err != nil {
-			return false, err
+	if isUpdate {
+		if !isEqual {
+			err := os.WriteFile(expectedPath, []byte(actualManifest), 0644)
+			if err != nil {
+				return fmt.Errorf("writing updated expected.yaml file: %w", err)
+			}
 		}
 	}
 
-	return areEqual && isValid, nil
+	// Validate
+	err = validateManifest(builder, release.Manifest)
+	if err != nil {
+		return fmt.Errorf("validating manifest: %w", err)
+	}
+
+	builder.EndTest()
+	return nil
 }
 
 // standardizeTree converts a tree of interface{} to a tree of map[string]interface{}
@@ -299,58 +283,26 @@ func loadValuesFile(filePath string) (map[string]interface{}, error) {
 	return data, nil
 }
 
-func validateManifest(manifest string) (bool, error) {
+func validateManifest(builder Builder, manifest string) error {
 	v, err := validator.New(nil, validator.Opts{Strict: true, IgnoreMissingSchemas: true})
 	if err != nil {
-		return false, fmt.Errorf("initializing validator: %w", err)
+		return fmt.Errorf("initializing validator: %w", err)
 	}
 
 	readCloser := io.NopCloser(strings.NewReader(manifest))
 	filePath := "rendered.yaml"
-	isValid := true
 	for i, res := range v.Validate(filePath, readCloser) { // A file might contain multiple resources
 		// File starts with ---, the parser assumes a first empty resource
 		if res.Status == validator.Invalid || res.Status == validator.Error {
 			sig, err := res.Resource.Signature()
 			if err != nil {
-				return false, fmt.Errorf("creating signature for invalid resource #%d: %w", i, err)
+				return fmt.Errorf("creating signature for invalid resource #%d: %w", i, err)
 			}
-			fmt.Printf("Invalid resource %s: %s\n", sig.QualifiedName(), res.Err)
-			isValid = false
+			builder.AddValidationError(sig.QualifiedName(), res.Err.Error())
 		}
 	}
 
-	return isValid, nil
-}
-
-func compareExpectedAndActualYAML(expectedStr, actualStr string, ignoreExpressions []string) (bool, error) {
-	ignorePatterns, err := compileIgnorePatterns(ignoreExpressions)
-	if err != nil {
-		return false, err
-	}
-
-	expectedStr = removeLinesMatchingPatterns(expectedStr, ignorePatterns)
-	actualStr = removeLinesMatchingPatterns(actualStr, ignorePatterns)
-
-	dmp := diffmatchpatch.New()
-	diffs := dmp.DiffMain(expectedStr, actualStr, false)
-
-	// Check if the strings are the same or different
-	areEqual := true
-	for _, diff := range diffs {
-		if diff.Type != diffmatchpatch.DiffEqual {
-			areEqual = false
-			break
-		}
-	}
-
-	if !areEqual {
-		diffOutput := dmp.DiffPrettyText(diffs)
-		fmt.Println("💔 Diff:")
-		fmt.Println(diffOutput)
-	}
-
-	return areEqual, nil
+	return nil
 }
 
 func removeLinesMatchingPatterns(input string, ignorePatterns []*regexp.Regexp) string {
@@ -387,4 +339,75 @@ func debug(format string, a ...interface{}) {
 	if isDebug {
 		fmt.Printf(format+"\n", a...)
 	}
+}
+
+func compareManifests(builder Builder, expectedManifest, actualManifest string) bool {
+	expected := splitManifest(expectedManifest)
+	actual := splitManifest(actualManifest)
+	areEqual := true
+
+	// Find missing items
+	for source, expectedContent := range expected {
+		if _, ok := actual[source]; !ok {
+			builder.AddMissingItem(source, expectedContent)
+			delete(expected, source)
+			areEqual = false
+		}
+	}
+
+	// Find extra items
+	for source, actualContent := range actual {
+		if _, ok := expected[source]; !ok {
+			builder.AddExtraItem(source, actualContent)
+			delete(actual, source)
+			areEqual = false
+		}
+	}
+
+	// Find different items
+	for source, expectedContent := range expected {
+		if actualContent, ok := actual[source]; ok {
+			if expectedContent != actualContent {
+				builder.AddDifferentItem(source, expectedContent, actualContent)
+				areEqual = false
+			}
+			delete(actual, source)
+		}
+	}
+
+	return areEqual
+}
+
+func splitManifest(buffer string) map[string]string {
+	items := make(map[string]string)
+	delimiter := "---\n# Source: "
+
+	// Split the buffer into chunks using the delimiter
+	chunks := strings.Split(buffer, delimiter)
+
+	// Process each chunk
+	for _, chunk := range chunks {
+		// Remove leading and trailing whitespaces
+		chunk = strings.TrimSpace(chunk)
+
+		// Skip empty chunks
+		if chunk == "" {
+			continue
+		}
+
+		// Find the source path and content within the chunk
+		parts := strings.SplitN(chunk, "\n", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		// Extract the source path and content
+		sourcePath := strings.TrimSpace(parts[0])
+		content := strings.TrimSpace(parts[1])
+
+		// Store the content in the map
+		items[sourcePath] = content
+	}
+
+	return items
 }

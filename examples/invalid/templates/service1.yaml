@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-service1
+  namespace: {{ .Release.Namespace }}
+spec:
+  {{- if eq .Values.invalidSchema true }}
+  invalidProperty: 1
+  {{- end}}
+  selector:
+    app: {{ .Release.Name }}
+    version: {{ .Values.version }}
+  ports:
+    - name: my-service
+      port: {{ .Values.port }}
+      targetPort: {{ .Values.port }}
+{{- if eq .Values.invalidSchema true }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: 9999
+  namespace: {{ .Release.Namespace }}
+{{- end}}

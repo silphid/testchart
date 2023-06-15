@@ -1,0 +1,4 @@
+apiVersion: v1
+description: Example chart
+name: invalid
+version: 9.9.9
