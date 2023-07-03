@@ -2,10 +2,11 @@ package main
 
 import (
 	"fmt"
+	"strings"
+
 	"github.com/hexops/gotextdiff"
 	"github.com/hexops/gotextdiff/myers"
 	"github.com/hexops/gotextdiff/span"
-	"strings"
 )
 
 type Builder interface {
@@ -245,7 +246,7 @@ func (pb *PrintBuilder) EndAllTests() {
 	if pb.testCount == 0 {
 		fmt.Println("🤷 No tests were run")
 	} else if pb.IsSuccessful() {
-		fmt.Printf("🌈🦄☀️  All %d tests passed\n", pb.testCount)
+		fmt.Printf("🌈🦄⭐️  All %d tests passed\n", pb.testCount)
 	} else {
 		fmt.Printf("🔥👺🧨  %d tests failed out of %d\n", pb.testCount-pb.successCount, pb.testCount)
 	}
