@@ -4,6 +4,31 @@ Helm chart unit testing CLI tool.
 
 It uses `helm` under the hood (but it has no external dependencies) to render chart in current directory once for each test found in the chart's `tests` sub-directory, using the `values.yaml` file in the test folder as inputs, and comparing the rendered results against the `expected.yaml` file also in the test directory.  The name of each test directory is used as the test name.
 
+For example, consider this directory structure:
+```
+tests
+├── deployment-with-secrets
+│   ├── values.yaml
+│   └── expected.yaml
+├── deployment-without-secrets
+│   ├── values.yaml
+│   └── expected.yaml
+├── job-with-sidecar
+│   ├── values.yaml
+│   └── expected.yaml
+└── job-without-sidecar
+    ├── values.yaml
+    └── expected.yaml
+```
+
+It defines the following test cases:
+- `deployment-with-secrets`
+- `deployment-without-secrets`
+- `job-with-sidecar`
+- `job-without-sidecar`
+
+For each test, the given `values.yaml` file will be injected into the chart and the resulting yaml compared against the given `expected.yaml` file.
+
 # Installation
 
 ## Using `homebrew`
