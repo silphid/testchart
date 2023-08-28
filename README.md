@@ -1,6 +1,6 @@
 # testchart
 
-Helm chart unit testing CLI tool.
+Testchart is a CLI tool for creating and running helm chart unit tests.
 
 It uses `helm` under the hood (but it has no external dependencies) to render chart in current directory once for each test found in the chart's `tests` sub-directory, using the `values.yaml` file in the test folder as inputs, and comparing the rendered results against the `expected.yaml` file also in the test directory.  The name of each test directory is used as the test name.
 
