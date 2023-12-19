@@ -3,15 +3,16 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"helm.sh/helm/v3/pkg/chart"
-	"helm.sh/helm/v3/pkg/chartutil"
-	"helm.sh/helm/v3/pkg/cli"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/chartutil"
+	"helm.sh/helm/v3/pkg/cli"
 
 	"github.com/spf13/cobra"
 	"github.com/yannh/kubeconform/pkg/validator"
@@ -20,10 +21,12 @@ import (
 	"helm.sh/helm/v3/pkg/chart/loader"
 )
 
-var version = "v0.0.0"
-var saveActual = false
-var showValues = false
-var showAllValues = false
+var (
+	version       = "v0.0.0"
+	saveActual    = false
+	showValues    = false
+	showAllValues = false
+)
 
 func main() {
 	var testPath string
@@ -193,7 +196,7 @@ func runTest(builder Builder, theChart *chart.Chart, installAction *action.Insta
 	// Save actual.yaml for troubleshooting purposes
 	if saveActual {
 		actualPath := filepath.Join(testPath, testName, "actual.yaml")
-		err := os.WriteFile(actualPath, manifests.Bytes(), 0644)
+		err := os.WriteFile(actualPath, manifests.Bytes(), 0o644)
 		if err != nil {
 			return fmt.Errorf("writing actual.yaml file for debug purposes: %w", err)
 		}
@@ -222,7 +225,7 @@ func runTest(builder Builder, theChart *chart.Chart, installAction *action.Insta
 	// Update expected?
 	if isUpdate {
 		if !isEqual {
-			err := os.WriteFile(expectedPath, []byte(actualManifest), 0644)
+			err := os.WriteFile(expectedPath, []byte(actualManifest), 0o644)
 			if err != nil {
 				return fmt.Errorf("writing updated expected.yaml file: %w", err)
 			}
@@ -398,6 +401,10 @@ func splitManifest(buffer string) map[string]string {
 		sourcePath := strings.TrimSpace(parts[0])
 		content := strings.TrimSpace(parts[1])
 
+		current, ok := items[sourcePath]
+		if ok {
+			content = current + "\n---\n" + content
+		}
 		// Store the content in the map
 		items[sourcePath] = content
 	}
