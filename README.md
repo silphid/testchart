@@ -110,4 +110,3 @@ To generate the `expected.yaml` for the first time for a new test named `test1`:
 ```bash
 $ testchart update test1
 ```
-
