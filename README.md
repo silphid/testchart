@@ -67,14 +67,16 @@ Available Commands:
   version     Display testchart build version
 
 Flags:
-  -h, --help               help for testchart
-  -i, --ignore strings     Regex specifying lines to ignore (can be specified multiple times)
-  -n, --namespace string   Name of namespace to use for rendering chart (default "my-namespace")
-  -p, --path string        Path to tests directory (default "tests")
-  -r, --release string     Name of release to use for rendering chart (default "my-release")
-  -s, --save-actual        Saves an actual.yaml file in each test dir for troubleshooting
-  -V, --show-all-values    Shows coalesced values for all tests
-  -v, --show-values        Shows coalesced values for failed tests
+      --app-version string     App version of chart to override for rendering chart
+      --chart-version string   Version of chart to override for rendering chart
+  -h, --help                   help for testchart
+  -i, --ignore strings         Regex specifying lines to ignore (can be specified multiple times)
+  -n, --namespace string       Name of namespace to use for rendering chart (default "my-namespace")
+  -p, --path string            Path to tests directory (default "tests")
+  -r, --release string         Name of release to use for rendering chart (default "my-release")
+  -s, --save-actual            Saves an actual.yaml file in each test dir for troubleshooting
+  -V, --show-all-values        Shows coalesced values for all tests
+  -v, --show-values            Shows coalesced values for failed tests
 
 Use "testchart [command] --help" for more information about a command.
 ```
