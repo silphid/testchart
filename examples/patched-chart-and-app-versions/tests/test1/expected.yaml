@@ -1,0 +1,9 @@
+---
+# Source: patched-chart-and-app-versions/templates/config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: configmap
+data:
+  chartVersion: "9.9.9"
+  appVersion: "8.8.8"

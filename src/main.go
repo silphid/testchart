@@ -32,6 +32,8 @@ func main() {
 	var testPath string
 	var namespace string
 	var release string
+	var chartVersion string
+	var appVersion string
 	isUpdate := false
 	var ignorePatterns []string
 
@@ -43,6 +45,8 @@ func main() {
 	rootCmd.PersistentFlags().StringVarP(&testPath, "path", "p", "tests", "Path to tests directory")
 	rootCmd.PersistentFlags().StringVarP(&namespace, "namespace", "n", "my-namespace", "Name of namespace to use for rendering chart")
 	rootCmd.PersistentFlags().StringVarP(&release, "release", "r", "my-release", "Name of release to use for rendering chart")
+	rootCmd.PersistentFlags().StringVar(&chartVersion, "chart-version", "", "Version of chart to override for rendering chart")
+	rootCmd.PersistentFlags().StringVar(&appVersion, "app-version", "", "App version of chart to override for rendering chart")
 	rootCmd.PersistentFlags().BoolVarP(&saveActual, "save-actual", "s", false, "Saves an actual.yaml file in each test dir for troubleshooting")
 	rootCmd.PersistentFlags().BoolVarP(&showValues, "show-values", "v", false, "Shows coalesced values for failed tests")
 	rootCmd.PersistentFlags().BoolVarP(&showAllValues, "show-all-values", "V", false, "Shows coalesced values for all tests")
@@ -53,7 +57,7 @@ func main() {
 		Short: "Run unit tests",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runTests(args, testPath, namespace, release, isUpdate, ignorePatterns)
+			return runTests(args, testPath, namespace, release, chartVersion, appVersion, isUpdate, ignorePatterns)
 		},
 	}
 
@@ -63,7 +67,7 @@ func main() {
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			isUpdate = true
-			return runTests(args, testPath, namespace, release, isUpdate, ignorePatterns)
+			return runTests(args, testPath, namespace, release, chartVersion, appVersion, isUpdate, ignorePatterns)
 		},
 	}
 
@@ -85,7 +89,7 @@ func main() {
 	}
 }
 
-func runTests(args []string, testPath, namespace, releaseName string, isUpdate bool, ignorePatterns []string) error {
+func runTests(args []string, testPath, namespace, releaseName, chartVersion, appVersion string, isUpdate bool, ignorePatterns []string) error {
 	if _, err := os.Stat(testPath); os.IsNotExist(err) {
 		fmt.Println("No tests found")
 		return nil
@@ -135,6 +139,14 @@ func runTests(args []string, testPath, namespace, releaseName string, isUpdate b
 	theChart, err := loader.Load(chartPath)
 	if err != nil {
 		return fmt.Errorf("loading chart: %w", err)
+	}
+
+	// Optionally override chart and app versions
+	if chartVersion != "" {
+		theChart.Metadata.Version = chartVersion
+	}
+	if appVersion != "" {
+		theChart.Metadata.AppVersion = appVersion
 	}
 
 	for _, testName := range testNames {

@@ -1,0 +1,8 @@
+apiVersion: v1
+description: |
+  This chart simulates version and appVersion below having been patched by CI pipeline.
+  To test this chart, run:
+    testchart run --chart-version 9.9.9 --app-version 8.8.8
+name: patched-chart-and-app-versions
+version: 1.2.3
+appVersion: 4.5.6
