@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -9,6 +10,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"cuelang.org/go/cue"
+	"cuelang.org/go/cue/cuecontext"
+	cueerrors "cuelang.org/go/cue/errors"
 
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chartutil"
@@ -95,6 +100,11 @@ func runTests(args []string, testPath, namespace, releaseName, chartVersion, app
 		return nil
 	}
 
+	schema, err := loadCueSchema()
+	if err != nil {
+		return fmt.Errorf("loading cue schema: %w", err)
+	}
+
 	var testNames []string
 	if len(args) > 0 {
 		testNames = args
@@ -117,8 +127,8 @@ func runTests(args []string, testPath, namespace, releaseName, chartVersion, app
 	// Create action config
 	settings := cli.New()
 	actionConfig := new(action.Configuration)
-	err := actionConfig.Init(settings.RESTClientGetter(), namespace, "memory", nil)
-	if err != nil {
+
+	if err := actionConfig.Init(settings.RESTClientGetter(), namespace, "memory", nil); err != nil {
 		log.Fatal(err)
 	}
 
@@ -150,7 +160,7 @@ func runTests(args []string, testPath, namespace, releaseName, chartVersion, app
 	}
 
 	for _, testName := range testNames {
-		err := runTest(builder, theChart, installAction, testPath, testName, isUpdate, ignorePatterns)
+		err := runTest(builder, theChart, installAction, testPath, testName, isUpdate, ignorePatterns, schema)
 		if err != nil {
 			return fmt.Errorf("running test %s: %w", testName, err)
 		}
@@ -163,7 +173,7 @@ func runTests(args []string, testPath, namespace, releaseName, chartVersion, app
 	return nil
 }
 
-func runTest(builder Builder, theChart *chart.Chart, installAction *action.Install, testPath, testName string, isUpdate bool, ignorePatterns []string) error {
+func runTest(builder Builder, theChart *chart.Chart, installAction *action.Install, testPath, testName string, isUpdate bool, ignorePatterns []string, schema *cue.Value) error {
 	builder.StartTest(testName)
 
 	// Load test values file
@@ -174,8 +184,11 @@ func runTest(builder Builder, theChart *chart.Chart, installAction *action.Insta
 	}
 
 	testValues = standardizeTree(testValues)
-	if err != nil {
-		return fmt.Errorf("merging test values onto chart default values: %w", err)
+
+	if schema != nil {
+		if err := schema.Unify(schema.Context().Encode(testValues)).Decode(&testValues); err != nil {
+			return fmt.Errorf("unifying values.yaml with schema:\n%w\n\n", ManyErr(cueerrors.Errors(err)))
+		}
 	}
 
 	// Show coalesced values
@@ -422,4 +435,32 @@ func splitManifest(buffer string) map[string]string {
 	}
 
 	return items
+}
+
+func loadCueSchema() (*cue.Value, error) {
+	data, err := os.ReadFile("./values.cue")
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	schema := cuecontext.New().
+		CompileBytes(data).
+		LookupPath(cue.MakePath(cue.Def("#values")))
+
+	if err := schema.Validate(); err != nil {
+		return nil, fmt.Errorf("validating schema: %w", err)
+	}
+
+	return &schema, nil
+}
+
+func ManyErr[T error](list []T) error {
+	errs := make([]error, len(list))
+	for i, elem := range list {
+		errs[i] = elem
+	}
+	return errors.Join(errs...)
 }
