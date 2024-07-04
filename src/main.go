@@ -31,6 +31,7 @@ var (
 	saveActual    = false
 	showValues    = false
 	showAllValues = false
+	debugOutput   = ""
 )
 
 func main() {
@@ -56,6 +57,7 @@ func main() {
 	rootCmd.PersistentFlags().BoolVarP(&showValues, "show-values", "v", false, "Shows coalesced values for failed tests")
 	rootCmd.PersistentFlags().BoolVarP(&showAllValues, "show-all-values", "V", false, "Shows coalesced values for all tests")
 	rootCmd.PersistentFlags().StringSliceVarP(&ignorePatterns, "ignore", "i", []string{}, "Regex specifying lines to ignore (can be specified multiple times)")
+	rootCmd.PersistentFlags().StringVar(&debugOutput, "debug", "", "location to render failed install output manifests for debugging")
 
 	runCmd := &cobra.Command{
 		Use:   "run [test1 test2 ...]",
@@ -207,6 +209,18 @@ func runTest(builder Builder, theChart *chart.Chart, installAction *action.Insta
 
 	// Render chart templates
 	release, err := installAction.Run(theChart, testValues)
+	if debugOutput != "" {
+		file, err := func() (io.WriteCloser, error) {
+			if debugOutput == "-" {
+				return NopWriterCloser{os.Stderr}, nil
+			}
+			return os.Create(debugOutput)
+		}()
+		if err == nil {
+			_, _ = file.Write([]byte(release.Manifest))
+			_ = file.Close()
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -463,4 +477,12 @@ func ManyErr[T error](list []T) error {
 		errs[i] = elem
 	}
 	return errors.Join(errs...)
+}
+
+type NopWriterCloser struct {
+	io.Writer
+}
+
+func (NopWriterCloser) Close() error {
+	return nil
 }
