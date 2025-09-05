@@ -15,6 +15,7 @@ type Builder interface {
 	StartTest(name string)
 
 	SetTestComparisonResult(isSame bool)
+	SetUpdateType(updateType string)
 	AddValidationError(signature, error string)
 
 	AddDifferentItem(source, expected, actual string)
@@ -38,23 +39,32 @@ type ValidationError struct {
 }
 
 func NewPrintBuilder(isUpdate bool) *PrintBuilder {
-	return &PrintBuilder{isUpdate: isUpdate}
+	return &PrintBuilder{
+		isUpdate:     isUpdate,
+		updateCounts: make(map[string]int),
+	}
 }
 
 type PrintBuilder struct {
 	name                                     string
 	isUpdate                                 bool
+	updateType                               string
 	isSame, isValid                          bool
 	differentItems, missingItems, extraItems []Item
 	validationErrors                         []ValidationError
 	getValuesYaml                            func() (string, error)
 	testCount, successCount                  int
+	updateCounts                             map[string]int // Track update types: "none", "formatting", "semantic"
 	longestName                              int
 }
 
 func (pb *PrintBuilder) StartAllTests(names []string) {
 	pb.testCount = 0
 	pb.successCount = 0
+	pb.updateCounts = make(map[string]int)
+	pb.updateCounts["none"] = 0
+	pb.updateCounts["formatting"] = 0
+	pb.updateCounts["semantic"] = 0
 
 	// Calculate longest name
 	for _, name := range names {
@@ -68,6 +78,7 @@ func (pb *PrintBuilder) StartTest(name string) {
 	pb.name = name
 	pb.isValid = true
 	pb.isSame = true
+	pb.updateType = ""
 	pb.differentItems = nil
 	pb.missingItems = nil
 	pb.extraItems = nil
@@ -77,6 +88,13 @@ func (pb *PrintBuilder) StartTest(name string) {
 
 func (pb *PrintBuilder) SetTestComparisonResult(isSame bool) {
 	pb.isSame = isSame
+}
+
+func (pb *PrintBuilder) SetUpdateType(updateType string) {
+	pb.updateType = updateType
+	if pb.isUpdate {
+		pb.updateCounts[updateType]++
+	}
 }
 
 func (pb *PrintBuilder) AddValidationError(signature, error string) {
@@ -123,13 +141,27 @@ func (pb *PrintBuilder) EndTest() error {
 
 	if isSuccessful {
 		if pb.isUpdate {
-			fmt.Println("👍 Nothing to update in expected file")
+			switch pb.updateType {
+			case "none":
+				fmt.Println("👍 Nothing to update in expected file")
+			case "formatting":
+				fmt.Println("🧹 Normalized formatting in expected file")
+			default:
+				fmt.Println("👍 Nothing to update in expected file")
+			}
 		} else {
 			fmt.Println("✅  Passed")
 		}
 	} else {
 		if pb.isUpdate {
-			fmt.Println("📝 Updated expected file")
+			switch pb.updateType {
+			case "semantic":
+				fmt.Println("📝 Updated expected file with content changes")
+			case "formatting":
+				fmt.Println("🧹 Normalized formatting in expected file")
+			default:
+				fmt.Println("📝 Updated expected file")
+			}
 		} else {
 			fmt.Printf("💔 Failed")
 			if !pb.isValid {
@@ -244,11 +276,44 @@ func colorizeDiff(diff string) string {
 func (pb *PrintBuilder) EndAllTests() {
 	fmt.Println(separator1)
 	if pb.testCount == 0 {
-		fmt.Println("🤷 No tests were run")
-	} else if pb.IsSuccessful() {
-		fmt.Printf("🌈🦄⭐️  All %d tests passed\n", pb.testCount)
+		if pb.isUpdate {
+			fmt.Println("🤷 No expected files to update")
+		} else {
+			fmt.Println("🤷 No tests were run")
+		}
+	} else if pb.isUpdate {
+		// Update mode summary
+		updated := pb.updateCounts["semantic"] + pb.updateCounts["formatting"]
+		unchanged := pb.updateCounts["none"]
+
+		if updated == 0 {
+			fmt.Printf("👍 All %d expected files unchanged\n", pb.testCount)
+		} else if unchanged == 0 {
+			if pb.updateCounts["semantic"] > 0 && pb.updateCounts["formatting"] > 0 {
+				fmt.Printf("📝 Updated %d expected files (%d content changes, %d formatting normalization)\n",
+					updated, pb.updateCounts["semantic"], pb.updateCounts["formatting"])
+			} else if pb.updateCounts["semantic"] > 0 {
+				fmt.Printf("📝 Updated %d expected files with content changes\n", pb.updateCounts["semantic"])
+			} else {
+				fmt.Printf("🧹 Normalized formatting in %d expected files\n", pb.updateCounts["formatting"])
+			}
+		} else {
+			if pb.updateCounts["semantic"] > 0 && pb.updateCounts["formatting"] > 0 {
+				fmt.Printf("📝 Updated %d expected files (%d content changes, %d formatting normalization), %d unchanged\n",
+					updated, pb.updateCounts["semantic"], pb.updateCounts["formatting"], unchanged)
+			} else if pb.updateCounts["semantic"] > 0 {
+				fmt.Printf("📝 Updated %d expected files with content changes, %d unchanged\n", pb.updateCounts["semantic"], unchanged)
+			} else {
+				fmt.Printf("🧹 Normalized formatting in %d expected files, %d unchanged\n", pb.updateCounts["formatting"], unchanged)
+			}
+		}
 	} else {
-		fmt.Printf("🔥👺🧨  %d tests failed out of %d\n", pb.testCount-pb.successCount, pb.testCount)
+		// Run mode summary
+		if pb.IsSuccessful() {
+			fmt.Printf("🌈🦄⭐️  All %d tests passed\n", pb.testCount)
+		} else {
+			fmt.Printf("🔥👺🧨  %d tests failed out of %d\n", pb.testCount-pb.successCount, pb.testCount)
+		}
 	}
 	fmt.Println(separator1)
 }

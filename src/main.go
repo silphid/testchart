@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"cuelang.org/go/cue"
@@ -263,11 +264,33 @@ func runTest(builder Builder, theChart *chart.Chart, installAction *action.Insta
 
 	// Update expected?
 	if isUpdate {
-		if !isEqual {
-			err := os.WriteFile(expectedPath, []byte(actualManifest), 0o644)
+		// Normalize the actual content for potential writing
+		normalizedActualManifest, err := normalizeManifest(actualManifest)
+		if err != nil {
+			// Fall back to original content if normalization fails
+			normalizedActualManifest = actualManifest
+		}
+
+		// Check if we need to update due to semantic differences
+		hasSemanticChanges := !isEqual
+
+		// Check if we need to update due to formatting differences
+		hasFormattingChanges := expectedManifest != normalizedActualManifest
+
+		if hasSemanticChanges || hasFormattingChanges {
+			err = os.WriteFile(expectedPath, []byte(normalizedActualManifest), 0o644)
 			if err != nil {
 				return fmt.Errorf("writing updated expected.yaml file: %w", err)
 			}
+
+			// Set update type for builder reporting
+			if hasSemanticChanges {
+				builder.SetUpdateType("semantic")
+			} else {
+				builder.SetUpdateType("formatting")
+			}
+		} else {
+			builder.SetUpdateType("none")
 		}
 	}
 
@@ -402,8 +425,19 @@ func compareManifests(builder Builder, expectedManifest, actualManifest string) 
 	// Find different items
 	for source, expectedContent := range expected {
 		if actualContent, ok := actual[source]; ok {
-			if expectedContent != actualContent {
-				builder.AddDifferentItem(source, expectedContent, actualContent)
+			// Normalize both before comparison
+			normalizedExpected, err1 := normalizeYAML(expectedContent)
+			normalizedActual, err2 := normalizeYAML(actualContent)
+
+			// Fall back to original comparison if normalization fails
+			if err1 != nil || err2 != nil {
+				if expectedContent != actualContent {
+					builder.AddDifferentItem(source, expectedContent, actualContent)
+					areEqual = false
+				}
+			} else if normalizedExpected != normalizedActual {
+				// Use normalized content for diff display
+				builder.AddDifferentItem(source, normalizedExpected, normalizedActual)
 				areEqual = false
 			}
 			delete(actual, source)
@@ -411,6 +445,84 @@ func compareManifests(builder Builder, expectedManifest, actualManifest string) 
 	}
 
 	return areEqual
+}
+
+func normalizeManifest(manifest string) (string, error) {
+	// Split manifest into individual documents, normalize each, then rejoin
+	documents := splitManifest(manifest)
+	var normalizedParts []string
+
+	// Get sources in a consistent order
+	var sources []string
+	for source := range documents {
+		sources = append(sources, source)
+	}
+	sort.Strings(sources)
+
+	for _, source := range sources {
+		content := documents[source]
+		normalizedContent, err := normalizeYAML(content)
+		if err != nil {
+			// Fall back to original content if normalization fails
+			normalizedContent = content
+		}
+
+		// Reconstruct the document with source header
+		normalizedParts = append(normalizedParts, "---\n# Source: "+source+"\n"+normalizedContent)
+	}
+
+	return strings.Join(normalizedParts, "\n"), nil
+}
+
+func normalizeYAML(content string) (string, error) {
+	// Parse YAML into Go structure
+	var data interface{}
+	if err := yaml.Unmarshal([]byte(content), &data); err != nil {
+		return content, err // Return original if parse fails
+	}
+
+	// Normalize the structure
+	normalized := normalizeYAMLNode(data)
+
+	// Re-serialize with consistent formatting
+	normalizedBytes, err := yaml.Marshal(normalized)
+	if err != nil {
+		return content, err
+	}
+
+	return strings.TrimSpace(string(normalizedBytes)), nil
+}
+
+func normalizeYAMLNode(node interface{}) interface{} {
+	switch v := node.(type) {
+	case map[interface{}]interface{}:
+		// Convert to string keys
+		result := make(map[string]interface{})
+		for k, val := range v {
+			strKey := fmt.Sprintf("%v", k)
+			result[strKey] = normalizeYAMLNode(val)
+		}
+		return result
+	case map[string]interface{}:
+		// Normalize values recursively
+		result := make(map[string]interface{})
+		for k, val := range v {
+			result[k] = normalizeYAMLNode(val)
+		}
+		return result
+	case []interface{}:
+		// Normalize array elements (preserve order)
+		result := make([]interface{}, len(v))
+		for i, elem := range v {
+			result[i] = normalizeYAMLNode(elem)
+		}
+		return result
+	case string:
+		// Normalize strings by trimming whitespace to handle block scalar differences
+		return strings.TrimSpace(v)
+	default:
+		return v
+	}
 }
 
 func splitManifest(buffer string) map[string]string {

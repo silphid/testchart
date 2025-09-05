@@ -3,13 +3,19 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: my-release
-  namespace: my-namespace
+    # Single-quoted string normalized
+    name: 'my-release'
+    # Block scalar string normalized
+    namespace: |
+      my-namespace
+# Comments normalized (dropped)
 spec:
   selector:
-    app: my-release
     version: v1
+    app: my-release
   ports:
-    - name: my-service
-      port: 1234
+    # Double-quoted string normalized
+    - name: "my-service"
+      # key ordering normalized (sorted)
       targetPort: 1234
+      port: 1234
