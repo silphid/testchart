@@ -6,7 +6,7 @@ metadata:
     # Single-quoted string normalized
     name: 'my-release'
     # Block scalar string normalized
-    namespace: |
+    namespace: |-
       my-namespace
 # Comments normalized (dropped)
 spec:

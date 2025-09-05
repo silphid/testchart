@@ -475,54 +475,15 @@ func normalizeManifest(manifest string) (string, error) {
 }
 
 func normalizeYAML(content string) (string, error) {
-	// Parse YAML into Go structure
-	var data interface{}
+	var data any
 	if err := yaml.Unmarshal([]byte(content), &data); err != nil {
-		return content, err // Return original if parse fails
+		return content, err
 	}
-
-	// Normalize the structure
-	normalized := normalizeYAMLNode(data)
-
-	// Re-serialize with consistent formatting
-	normalizedBytes, err := yaml.Marshal(normalized)
+	normalizedBytes, err := yaml.Marshal(data)
 	if err != nil {
 		return content, err
 	}
-
 	return strings.TrimSpace(string(normalizedBytes)), nil
-}
-
-func normalizeYAMLNode(node interface{}) interface{} {
-	switch v := node.(type) {
-	case map[interface{}]interface{}:
-		// Convert to string keys
-		result := make(map[string]interface{})
-		for k, val := range v {
-			strKey := fmt.Sprintf("%v", k)
-			result[strKey] = normalizeYAMLNode(val)
-		}
-		return result
-	case map[string]interface{}:
-		// Normalize values recursively
-		result := make(map[string]interface{})
-		for k, val := range v {
-			result[k] = normalizeYAMLNode(val)
-		}
-		return result
-	case []interface{}:
-		// Normalize array elements (preserve order)
-		result := make([]interface{}, len(v))
-		for i, elem := range v {
-			result[i] = normalizeYAMLNode(elem)
-		}
-		return result
-	case string:
-		// Normalize strings by trimming whitespace to handle block scalar differences
-		return strings.TrimSpace(v)
-	default:
-		return v
-	}
 }
 
 func splitManifest(buffer string) map[string]string {
