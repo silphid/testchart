@@ -2,7 +2,7 @@
 
 Testchart is a CLI tool for creating and running helm chart unit tests.
 
-It uses `helm` under the hood (but it has no external dependencies) to render chart in current directory once for each test found in the chart's `tests` sub-directory, using the `values.yaml` file in the test folder as inputs, and comparing the rendered results against the `expected.yaml` file also in the test directory.  The name of each test directory is used as the test name.
+It uses `helm` under the hood (but it has no external dependencies) to render chart in current directory once for each test found in the chart's `tests` sub-directory, using the `values.yaml` file in the test folder as inputs, and doing a normalized comparison against the rendered results against the `expected.yaml` file also in the test directory (see Comparison Method section below).  The name of each test directory is used as the test name.
 
 For example, consider this directory structure:
 ```
@@ -112,3 +112,12 @@ To generate the `expected.yaml` for the first time for a new test named `test1`:
 ```bash
 $ testchart update test1
 ```
+
+## Comparison Method
+
+When comparing the rendered results against the expected results, `testchart` first normalizes both the rendered and expected results by:
+
+- dropping comments
+- normalizing formatting, indentation and whitespace
+- normalizing string styles (quoting, block scalar, etc.)
+- normalizing key ordering (alphanumerical sorting)
