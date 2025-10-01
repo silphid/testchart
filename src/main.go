@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 
 	"cuelang.org/go/cue"
@@ -445,45 +444,6 @@ func compareManifests(builder Builder, expectedManifest, actualManifest string) 
 	}
 
 	return areEqual
-}
-
-func normalizeManifest(manifest string) (string, error) {
-	// Split manifest into individual documents, normalize each, then rejoin
-	documents := splitManifest(manifest)
-	var normalizedParts []string
-
-	// Get sources in a consistent order
-	var sources []string
-	for source := range documents {
-		sources = append(sources, source)
-	}
-	sort.Strings(sources)
-
-	for _, source := range sources {
-		content := documents[source]
-		normalizedContent, err := normalizeYAML(content)
-		if err != nil {
-			// Fall back to original content if normalization fails
-			normalizedContent = content
-		}
-
-		// Reconstruct the document with source header
-		normalizedParts = append(normalizedParts, "---\n# Source: "+source+"\n"+normalizedContent)
-	}
-
-	return strings.Join(normalizedParts, "\n"), nil
-}
-
-func normalizeYAML(content string) (string, error) {
-	var data any
-	if err := yaml.Unmarshal([]byte(content), &data); err != nil {
-		return content, err
-	}
-	normalizedBytes, err := yaml.Marshal(data)
-	if err != nil {
-		return content, err
-	}
-	return strings.TrimSpace(string(normalizedBytes)), nil
 }
 
 func splitManifest(buffer string) map[string]string {
