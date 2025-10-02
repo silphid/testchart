@@ -257,8 +257,10 @@ func runTest(builder Builder, theChart *chart.Chart, installAction *action.Insta
 	actualManifest := removeLinesMatchingPatterns(manifests.String(), ignoreExpressions)
 	expectedManifest = removeLinesMatchingPatterns(expectedManifest, ignoreExpressions)
 
-	// Compare
-	isEqual := compareManifests(builder, expectedManifest, actualManifest)
+	isEqual, err := compareManifests(builder, expectedManifest, actualManifest)
+	if err != nil {
+		return fmt.Errorf("comparing manifests: %w", err)
+	}
 	builder.SetTestComparisonResult(isEqual)
 
 	// Update expected?
@@ -398,7 +400,7 @@ func compileIgnorePatterns(ignoreExpressions []string) ([]*regexp.Regexp, error)
 	return ignorePatterns, nil
 }
 
-func compareManifests(builder Builder, expectedManifest, actualManifest string) bool {
+func compareManifests(builder Builder, expectedManifest, actualManifest string) (bool, error) {
 	expected := splitManifest(expectedManifest)
 	actual := splitManifest(actualManifest)
 	areEqual := true
@@ -424,18 +426,17 @@ func compareManifests(builder Builder, expectedManifest, actualManifest string) 
 	// Find different items
 	for source, expectedContent := range expected {
 		if actualContent, ok := actual[source]; ok {
-			// Normalize both before comparison
-			normalizedExpected, err1 := normalizeYAML(expectedContent)
-			normalizedActual, err2 := normalizeYAML(actualContent)
+			normalizedExpected, err := normalizeYAML(expectedContent)
+			if err != nil {
+				return false, fmt.Errorf("normalizing expected content: %w", err)
+			}
 
-			// Fall back to original comparison if normalization fails
-			if err1 != nil || err2 != nil {
-				if expectedContent != actualContent {
-					builder.AddDifferentItem(source, expectedContent, actualContent)
-					areEqual = false
-				}
-			} else if normalizedExpected != normalizedActual {
-				// Use normalized content for diff display
+			normalizedActual, err := normalizeYAML(actualContent)
+			if err != nil {
+				return false, fmt.Errorf("normalizing actual content: %w", err)
+			}
+
+			if normalizedExpected != normalizedActual {
 				builder.AddDifferentItem(source, normalizedExpected, normalizedActual)
 				areEqual = false
 			}
@@ -443,7 +444,7 @@ func compareManifests(builder Builder, expectedManifest, actualManifest string) 
 		}
 	}
 
-	return areEqual
+	return areEqual, nil
 }
 
 func splitManifest(buffer string) map[string]string {
