@@ -428,12 +428,12 @@ func compareManifests(builder Builder, expectedManifest, actualManifest string) 
 		if actualContent, ok := actual[source]; ok {
 			normalizedExpected, err := normalizeYAML(expectedContent)
 			if err != nil {
-				return false, fmt.Errorf("normalizing expected content: %w", err)
+				return false, fmt.Errorf("normalizing expected content: %w:\n%s", err, expectedContent)
 			}
 
 			normalizedActual, err := normalizeYAML(actualContent)
 			if err != nil {
-				return false, fmt.Errorf("normalizing actual content: %w", err)
+				return false, fmt.Errorf("normalizing actual content: %w:\n%s", err, actualContent)
 			}
 
 			if normalizedExpected != normalizedActual {
