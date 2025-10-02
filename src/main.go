@@ -259,7 +259,7 @@ func runTest(builder Builder, theChart *chart.Chart, installAction *action.Insta
 
 	isEqual, err := compareManifests(builder, expectedManifest, actualManifest)
 	if err != nil {
-		return fmt.Errorf("comparing manifests: %w", err)
+		return fmt.Errorf("comparing manifests: %w\n\nactual manifest:\n%s\n\nexpected manifest:\n%s", err, actualManifest, expectedManifest)
 	}
 	builder.SetTestComparisonResult(isEqual)
 
