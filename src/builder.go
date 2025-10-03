@@ -21,6 +21,7 @@ type Builder interface {
 	AddDifferentItem(source, expected, actual string)
 	AddMissingItem(source, expected string)
 	AddExtraItem(source, actual string)
+	AddIgnoredLine(line string)
 
 	ShowValues(getValuesYaml func() (string, error))
 
@@ -56,6 +57,7 @@ type PrintBuilder struct {
 	testCount, successCount                  int
 	updateCounts                             map[string]int // Track update types: "none", "formatting", "semantic"
 	longestName                              int
+	ignoredLines                             []string
 }
 
 func (pb *PrintBuilder) StartAllTests(names []string) {
@@ -112,6 +114,10 @@ func (pb *PrintBuilder) AddMissingItem(source, expected string) {
 
 func (pb *PrintBuilder) AddExtraItem(source, actual string) {
 	pb.extraItems = append(pb.extraItems, Item{source, "", actual})
+}
+
+func (pb *PrintBuilder) AddIgnoredLine(line string) {
+	pb.ignoredLines = append(pb.ignoredLines, line)
 }
 
 const (
@@ -242,6 +248,14 @@ func (pb *PrintBuilder) EndTest() error {
 		}
 		fmt.Println("📜 Coalesced values:")
 		fmt.Println(valuesYaml)
+	}
+
+	if len(pb.ignoredLines) > 0 {
+		fmt.Println(separator3)
+		for _, ignoredLine := range pb.ignoredLines {
+			fmt.Printf("🙈 Ignored line: %q\n", ignoredLine)
+		}
+		pb.ignoredLines = []string{}
 	}
 	return nil
 }

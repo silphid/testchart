@@ -249,15 +249,15 @@ func runTest(builder Builder, theChart *chart.Chart, installAction *action.Insta
 	}
 	expectedManifest := string(expectedBytes)
 
-	// Filter manifests for ignored patterns
+	// Compile ignore patterns to regular expressions
 	ignoreExpressions, err := compileIgnorePatterns(ignorePatterns)
 	if err != nil {
 		return fmt.Errorf("compiling ignore patterns: %w", err)
 	}
-	actualManifest := removeLinesMatchingPatterns(manifests.String(), ignoreExpressions)
-	expectedManifest = removeLinesMatchingPatterns(expectedManifest, ignoreExpressions)
 
-	isEqual, err := compareManifests(builder, expectedManifest, actualManifest)
+	// Compare manifests
+	actualManifest := manifests.String()
+	isEqual, err := compareManifests(builder, expectedManifest, actualManifest, ignoreExpressions)
 	if err != nil {
 		return fmt.Errorf("comparing manifests: %w\n\nactual manifest:\n%s\n\nexpected manifest:\n%s\n\nignore patterns:\n%v", err, actualManifest, expectedManifest, ignorePatterns)
 	}
@@ -370,7 +370,7 @@ func validateManifest(builder Builder, manifest string) error {
 	return nil
 }
 
-func removeLinesMatchingPatterns(input string, ignorePatterns []*regexp.Regexp) string {
+func removeLinesMatchingPatterns(builder Builder, input string, ignorePatterns []*regexp.Regexp) string {
 	lines := strings.Split(input, "\n")
 	var filteredLines []string
 	for _, line := range lines {
@@ -381,7 +381,9 @@ func removeLinesMatchingPatterns(input string, ignorePatterns []*regexp.Regexp) 
 				break
 			}
 		}
-		if !match {
+		if match {
+			builder.AddIgnoredLine(line)
+		} else {
 			filteredLines = append(filteredLines, line)
 		}
 	}
@@ -400,7 +402,7 @@ func compileIgnorePatterns(ignoreExpressions []string) ([]*regexp.Regexp, error)
 	return ignorePatterns, nil
 }
 
-func compareManifests(builder Builder, expectedManifest, actualManifest string) (bool, error) {
+func compareManifests(builder Builder, expectedManifest, actualManifest string, ignoreExpressions []*regexp.Regexp) (bool, error) {
 	expected := splitManifest(expectedManifest)
 	actual := splitManifest(actualManifest)
 	areEqual := true
@@ -436,7 +438,10 @@ func compareManifests(builder Builder, expectedManifest, actualManifest string) 
 				return false, fmt.Errorf("normalizing actual content: %w:\n%s", err, actualContent)
 			}
 
-			if normalizedExpected != normalizedActual {
+			sanitizedExpected := removeLinesMatchingPatterns(builder, normalizedExpected, ignoreExpressions)
+			sanitizedActual := removeLinesMatchingPatterns(builder, normalizedActual, ignoreExpressions)
+
+			if sanitizedExpected != sanitizedActual {
 				builder.AddDifferentItem(source, normalizedExpected, normalizedActual)
 				areEqual = false
 			}
