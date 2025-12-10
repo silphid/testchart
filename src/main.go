@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"cuelang.org/go/cue"
@@ -21,6 +23,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/yannh/kubeconform/pkg/validator"
+	"golang.org/x/sync/errgroup"
 	"gopkg.in/yaml.v2"
 	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/chart/loader"
@@ -78,6 +81,15 @@ func main() {
 		},
 	}
 
+	listCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List available tests",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return listTests(testPath)
+		},
+	}
+
 	versionCmd := &cobra.Command{
 		Use:   "version",
 		Short: "Display testchart build version",
@@ -89,11 +101,46 @@ func main() {
 
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(updateCmd)
+	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(versionCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func readTestNames(testPath string) ([]string, error) {
+	files, err := os.ReadDir(testPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading test directory: %w", err)
+	}
+
+	var testNames []string
+	for _, file := range files {
+		if file.IsDir() {
+			testNames = append(testNames, file.Name())
+		}
+	}
+
+	return testNames, nil
+}
+
+func listTests(testPath string) error {
+	testNames, err := readTestNames(testPath)
+	if err != nil {
+		return err
+	}
+
+	if len(testNames) == 0 {
+		fmt.Println("No tests found")
+		return nil
+	}
+
+	for _, name := range testNames {
+		fmt.Println(name)
+	}
+
+	return nil
 }
 
 func runTests(args []string, testPath, namespace, releaseName, chartVersion, appVersion string, isUpdate bool, ignorePatterns []string) error {
@@ -111,19 +158,15 @@ func runTests(args []string, testPath, namespace, releaseName, chartVersion, app
 	if len(args) > 0 {
 		testNames = args
 	} else {
-		files, err := os.ReadDir(testPath)
+		var err error
+		testNames, err = readTestNames(testPath)
 		if err != nil {
 			log.Fatal(err)
 		}
-
-		for _, file := range files {
-			if file.IsDir() {
-				testNames = append(testNames, file.Name())
-			}
-		}
 	}
 
-	builder := NewPrintBuilder(isUpdate)
+	printBuilder := NewPrintBuilder(isUpdate)
+	builder := newSyncBuilder(printBuilder)
 	builder.StartAllTests(testNames)
 
 	// Create action config
@@ -161,11 +204,22 @@ func runTests(args []string, testPath, namespace, releaseName, chartVersion, app
 		theChart.Metadata.AppVersion = appVersion
 	}
 
+	g, _ := errgroup.WithContext(context.Background())
+	g.SetLimit(runtime.NumCPU())
+
 	for _, testName := range testNames {
-		err := runTest(builder, theChart, installAction, testPath, testName, isUpdate, ignorePatterns, schema)
-		if err != nil {
-			return fmt.Errorf("running test %s: %w", testName, err)
-		}
+		name := testName
+		g.Go(func() error {
+			err := runTest(builder, theChart, installAction, testPath, name, isUpdate, ignorePatterns, schema)
+			if err != nil {
+				return fmt.Errorf("running test %s: %w", name, err)
+			}
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return err
 	}
 
 	builder.EndAllTests()

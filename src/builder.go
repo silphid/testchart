@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/hexops/gotextdiff"
 	"github.com/hexops/gotextdiff/myers"
@@ -334,4 +335,91 @@ func (pb *PrintBuilder) EndAllTests() {
 
 func (pb *PrintBuilder) IsSuccessful() bool {
 	return pb.successCount == pb.testCount
+}
+
+type syncBuilder struct {
+	builder Builder
+	mu      sync.Mutex
+}
+
+func newSyncBuilder(builder Builder) *syncBuilder {
+	return &syncBuilder{builder: builder}
+}
+
+func (sb *syncBuilder) StartAllTests(names []string) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	sb.builder.StartAllTests(names)
+}
+
+func (sb *syncBuilder) StartTest(name string) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	sb.builder.StartTest(name)
+}
+
+func (sb *syncBuilder) SetTestComparisonResult(isSame bool) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	sb.builder.SetTestComparisonResult(isSame)
+}
+
+func (sb *syncBuilder) SetUpdateType(updateType string) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	sb.builder.SetUpdateType(updateType)
+}
+
+func (sb *syncBuilder) AddValidationError(signature, error string) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	sb.builder.AddValidationError(signature, error)
+}
+
+func (sb *syncBuilder) AddDifferentItem(source, expected, actual string) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	sb.builder.AddDifferentItem(source, expected, actual)
+}
+
+func (sb *syncBuilder) AddMissingItem(source, expected string) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	sb.builder.AddMissingItem(source, expected)
+}
+
+func (sb *syncBuilder) AddExtraItem(source, actual string) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	sb.builder.AddExtraItem(source, actual)
+}
+
+func (sb *syncBuilder) AddIgnoredLine(line string) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	sb.builder.AddIgnoredLine(line)
+}
+
+func (sb *syncBuilder) ShowValues(getValuesYaml func() (string, error)) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	sb.builder.ShowValues(getValuesYaml)
+}
+
+func (sb *syncBuilder) EndTest() error {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.builder.EndTest()
+}
+
+func (sb *syncBuilder) EndAllTests() {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	sb.builder.EndAllTests()
+}
+
+func (sb *syncBuilder) IsSuccessful() bool {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.builder.IsSuccessful()
 }
