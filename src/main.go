@@ -7,7 +7,9 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"runtime"
 	"strings"
+	"time"
 
 	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/cuecontext"
@@ -31,6 +33,7 @@ func main() {
 	var release string
 	var chartVersion string
 	var appVersion string
+	var concurrency int
 	isUpdate := false
 	var ignorePatterns []string
 
@@ -49,13 +52,14 @@ func main() {
 	rootCmd.PersistentFlags().BoolVarP(&showAllValues, "show-all-values", "V", false, "Shows coalesced values for all tests")
 	rootCmd.PersistentFlags().StringSliceVarP(&ignorePatterns, "ignore", "i", []string{}, "Regex specifying lines to ignore (can be specified multiple times)")
 	rootCmd.PersistentFlags().StringVar(&debugOutput, "debug", "", "location to render failed install output manifests for debugging")
+	rootCmd.PersistentFlags().IntVarP(&concurrency, "concurrency", "c", runtime.GOMAXPROCS(0), "test run concurrency")
 
 	runCmd := &cobra.Command{
 		Use:   "run [test1 test2 ...]",
 		Short: "Run unit tests",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runTests(args, testPath, namespace, release, chartVersion, appVersion, isUpdate, ignorePatterns)
+			return runTests(args, testPath, namespace, release, chartVersion, appVersion, isUpdate, ignorePatterns, concurrency)
 		},
 	}
 
@@ -65,7 +69,7 @@ func main() {
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			isUpdate = true
-			return runTests(args, testPath, namespace, release, chartVersion, appVersion, isUpdate, ignorePatterns)
+			return runTests(args, testPath, namespace, release, chartVersion, appVersion, isUpdate, ignorePatterns, concurrency)
 		},
 	}
 
@@ -87,7 +91,7 @@ func main() {
 	}
 }
 
-func runTests(args []string, testPath, namespace, releaseName, chartVersion, appVersion string, isUpdate bool, ignorePatterns []string) error {
+func runTests(args []string, testPath, namespace, releaseName, chartVersion, appVersion string, isUpdate bool, ignorePatterns []string, concurrency int) error {
 	if _, err := os.Stat(testPath); os.IsNotExist(err) {
 		fmt.Println("No tests found")
 		return nil
@@ -114,12 +118,13 @@ func runTests(args []string, testPath, namespace, releaseName, chartVersion, app
 		}
 	}
 
-	suite := NewTestSuite(testNames, schema, isUpdate)
+	suite := NewTestSuite(testNames, isUpdate)
 
 	runOptions := RunOptions{
 		RootFS:         testPath,
 		IgnorePatterns: ignorePatterns,
 		Schema:         schema,
+		Concurrency:    concurrency,
 		HelmOptions: HelmOptions{
 			Namespace:    namespace,
 			Release:      releaseName,
@@ -128,11 +133,16 @@ func runTests(args []string, testPath, namespace, releaseName, chartVersion, app
 		},
 	}
 
+	start := time.Now()
+
 	if err := suite.Run(runOptions); err != nil {
 		return err
 	}
 
 	suite.PrintSummary()
+
+	fmt.Println()
+	fmt.Println("Tests completed in:", time.Since(start).Round(time.Millisecond).String())
 
 	if !suite.IsSuccessful() {
 		os.Exit(1)

@@ -1,8 +1,7 @@
 module github.com/silphid/testchart
 
-go 1.21
+go 1.25.5
 
-toolchain go1.22.3
 
 require (
 	cuelang.org/go v0.8.2

@@ -440,7 +440,7 @@ type TestSuite struct {
 	Tests    []*Test
 }
 
-func NewTestSuite(names []string, schema *cue.Value, isUpdate bool) *TestSuite {
+func NewTestSuite(names []string, isUpdate bool) *TestSuite {
 	return &TestSuite{
 		IsUpdate: isUpdate,
 		Tests: func() (tests []*Test) {
@@ -511,6 +511,7 @@ type RunOptions struct {
 	RootFS         string
 	IgnorePatterns []string
 	Schema         *cue.Value
+	Concurrency    int
 	HelmOptions
 }
 
@@ -525,50 +526,81 @@ func (suite TestSuite) Run(opts RunOptions) error {
 		return max
 	}()
 
-	for _, test := range suite.Tests {
-		// Create action config
-		settings := cli.New()
-		actionConfig := new(action.Configuration)
+	var results []chan *Test
+	for range suite.Tests {
+		results = append(results, make(chan *Test, 1))
+	}
 
-		if err := actionConfig.Init(settings.RESTClientGetter(), opts.Namespace, "memory", nil); err != nil {
-			log.Fatal(err)
-		}
+	e := make(chan error, suite.TotalLength())
 
-		// Create install action
-		installAction := action.NewInstall(actionConfig)
-		installAction.Namespace = opts.Namespace
-		installAction.ReleaseName = opts.Release
-		installAction.DryRun = true
-		installAction.IncludeCRDs = true
-		installAction.ClientOnly = true
-		installAction.Replace = true
+	concurrency := func() int {
+		if opts.Concurrency <= 0 {
+			return suite.TotalLength()
+		}
+		return opts.Concurrency
+	}()
 
-		// Load chart
-		chartPath, err := filepath.Abs(".")
-		if err != nil {
-			return fmt.Errorf("getting chart path: %w", err)
-		}
-		theChart, err := loader.Load(chartPath)
-		if err != nil {
-			return fmt.Errorf("loading chart: %w", err)
-		}
+	semaphore := make(chan struct{}, concurrency)
 
-		// Optionally override chart and app versions
-		if chartVersion := opts.ChartVersion; chartVersion != "" {
-			theChart.Metadata.Version = chartVersion
-		}
-		if appVersion := opts.AppVersion; appVersion != "" {
-			theChart.Metadata.AppVersion = appVersion
-		}
+	go func() {
+		for i, test := range suite.Tests {
+			semaphore <- struct{}{}
+			go func() {
+				defer func() { <-semaphore }()
 
-		if err := test.Run(theChart, installAction, opts.RootFS, opts.IgnorePatterns, opts.Schema); err != nil {
-			return fmt.Errorf("running test %s: %w", test.name, err)
-		}
+				settings := cli.New()
+				actionConfig := new(action.Configuration)
 
-		if err := test.PrintResult(longestName); err != nil {
-			return fmt.Errorf("failed to finalize test: %w", err)
-		}
+				if err := actionConfig.Init(settings.RESTClientGetter(), opts.Namespace, "memory", nil); err != nil {
+					log.Fatal(err)
+				}
 
+				installAction := action.NewInstall(actionConfig)
+				installAction.Namespace = opts.Namespace
+				installAction.ReleaseName = opts.Release
+				installAction.DryRun = true
+				installAction.IncludeCRDs = true
+				installAction.ClientOnly = true
+				installAction.Replace = true
+
+				chartPath, err := filepath.Abs(".")
+				if err != nil {
+					e <- fmt.Errorf("getting chart path: %w", err)
+					return
+				}
+
+				theChart, err := loader.Load(chartPath)
+				if err != nil {
+					e <- fmt.Errorf("loading chart: %w", err)
+					return
+				}
+
+				if chartVersion := opts.ChartVersion; chartVersion != "" {
+					theChart.Metadata.Version = chartVersion
+				}
+				if appVersion := opts.AppVersion; appVersion != "" {
+					theChart.Metadata.AppVersion = appVersion
+				}
+
+				if err := test.Run(theChart, installAction, opts.RootFS, opts.IgnorePatterns, opts.Schema); err != nil {
+					e <- fmt.Errorf("running test %s: %w", test.name, err)
+					return
+				}
+
+				results[i] <- test
+			}()
+		}
+	}()
+
+	for i := range suite.Tests {
+		select {
+		case err := <-e:
+			return err
+		case test := <-results[i]:
+			if err := test.PrintResult(longestName); err != nil {
+				return fmt.Errorf("failed to finalize test: %w", err)
+			}
+		}
 	}
 
 	return nil
