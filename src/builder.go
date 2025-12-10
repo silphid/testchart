@@ -1,35 +1,26 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"io"
+	"log"
+	"os"
+	"path/filepath"
 	"strings"
 
+	"cuelang.org/go/cue"
+	cueerrors "cuelang.org/go/cue/errors"
 	"github.com/hexops/gotextdiff"
 	"github.com/hexops/gotextdiff/myers"
 	"github.com/hexops/gotextdiff/span"
+	"gopkg.in/yaml.v2"
+	"helm.sh/helm/v3/pkg/action"
+	"helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/chart/loader"
+	"helm.sh/helm/v3/pkg/chartutil"
+	"helm.sh/helm/v3/pkg/cli"
 )
-
-type Builder interface {
-	StartAllTests(names []string)
-
-	StartTest(name string)
-
-	SetTestComparisonResult(isSame bool)
-	SetUpdateType(updateType string)
-	AddValidationError(signature, error string)
-
-	AddDifferentItem(source, expected, actual string)
-	AddMissingItem(source, expected string)
-	AddExtraItem(source, actual string)
-	AddIgnoredLine(line string)
-
-	ShowValues(getValuesYaml func() (string, error))
-
-	EndTest() error
-
-	EndAllTests()
-	IsSuccessful() bool
-}
 
 type Item struct {
 	source, expected, actual string
@@ -39,14 +30,7 @@ type ValidationError struct {
 	signature, error string
 }
 
-func NewPrintBuilder(isUpdate bool) *PrintBuilder {
-	return &PrintBuilder{
-		isUpdate:     isUpdate,
-		updateCounts: make(map[string]int),
-	}
-}
-
-type PrintBuilder struct {
+type Test struct {
 	name                                     string
 	isUpdate                                 bool
 	updateType                               string
@@ -54,69 +38,167 @@ type PrintBuilder struct {
 	differentItems, missingItems, extraItems []Item
 	validationErrors                         []ValidationError
 	getValuesYaml                            func() (string, error)
-	testCount, successCount                  int
-	updateCounts                             map[string]int // Track update types: "none", "formatting", "semantic"
-	longestName                              int
-	ignoredLines                             []string
+	// updateCounts                             map[string]int // Track update types: "none", "formatting", "semantic"
+	// longestName  int
+	ignoredLines []string
 }
 
-func (pb *PrintBuilder) StartAllTests(names []string) {
-	pb.testCount = 0
-	pb.successCount = 0
-	pb.updateCounts = make(map[string]int)
-	pb.updateCounts["none"] = 0
-	pb.updateCounts["formatting"] = 0
-	pb.updateCounts["semantic"] = 0
+func (test *Test) Run(theChart *chart.Chart, installAction *action.Install, rootPath string, ignorePatterns []string, schema *cue.Value) error {
+	// Load test values file
+	testValuesPath := filepath.Join(rootPath, test.name, "values.yaml")
+	testValues, err := loadValuesFile(testValuesPath)
+	if err != nil {
+		return fmt.Errorf("parsing test values file %q: %w", testValuesPath, err)
+	}
 
-	// Calculate longest name
-	for _, name := range names {
-		if len(name) > pb.longestName {
-			pb.longestName = len(name)
+	testValues = standardizeTree(testValues)
+
+	if schema != nil {
+		if err := schema.Unify(schema.Context().Encode(testValues)).Decode(&testValues); err != nil {
+			return fmt.Errorf("unifying values.yaml with schema:\n%w\n\n", ManyErr(cueerrors.Errors(err)))
 		}
 	}
+
+	// Show coalesced values
+	test.ShowValues(func() (string, error) {
+		values, err := chartutil.ToRenderValues(theChart, testValues, chartutil.ReleaseOptions{Name: installAction.ReleaseName, Namespace: installAction.Namespace}, nil)
+		if err != nil {
+			return "", fmt.Errorf("coalescing test values onto chart default values: %w", err)
+		}
+		values = values["Values"].(chartutil.Values)
+		valuesYaml, err := yaml.Marshal(values)
+		if err != nil {
+			return "", fmt.Errorf("serializing values to yaml: %w", err)
+		}
+		return strings.TrimSpace(string(valuesYaml)), nil
+	})
+
+	// Render chart templates
+	release, err := installAction.Run(theChart, testValues)
+	if debugOutput != "" {
+		file, err := func() (io.WriteCloser, error) {
+			if debugOutput == "-" {
+				return NopWriterCloser{os.Stderr}, nil
+			}
+			return os.Create(debugOutput)
+		}()
+		if err == nil {
+			_, _ = file.Write([]byte(release.Manifest))
+			_ = file.Close()
+		}
+	}
+	if err != nil {
+		return err
+	}
+
+	// Combine regular manifests and hook manifests
+	var manifests bytes.Buffer
+	_, _ = fmt.Fprintln(&manifests, strings.TrimSpace(release.Manifest))
+	for _, m := range release.Hooks {
+		_, _ = fmt.Fprintf(&manifests, "---\n# Source: %s\n%s\n", m.Path, m.Manifest)
+	}
+
+	// Save actual.yaml for troubleshooting purposes
+	if saveActual {
+		actualPath := filepath.Join(rootPath, test.name, "actual.yaml")
+		err := os.WriteFile(actualPath, manifests.Bytes(), 0o644)
+		if err != nil {
+			return fmt.Errorf("writing actual.yaml file for debug purposes: %w", err)
+		}
+	}
+
+	// Read expected.yaml
+	expectedPath := filepath.Join(rootPath, test.name, "expected.yaml")
+	expectedBytes, err := os.ReadFile(expectedPath)
+	if err != nil {
+		return fmt.Errorf("reading expected.yaml file: %w", err)
+	}
+	expectedManifest := string(expectedBytes)
+
+	// Compile ignore patterns to regular expressions
+	ignoreExpressions, err := compileIgnorePatterns(ignorePatterns)
+	if err != nil {
+		return fmt.Errorf("compiling ignore patterns: %w", err)
+	}
+
+	// Compare manifests
+	actualManifest := manifests.String()
+	isEqual, err := compareManifests(test, expectedManifest, actualManifest, ignoreExpressions)
+	if err != nil {
+		return fmt.Errorf("comparing manifests: %w\n\nactual manifest:\n%s\n\nexpected manifest:\n%s\n\nignore patterns:\n%v", err, actualManifest, expectedManifest, ignorePatterns)
+	}
+	test.SetTestComparisonResult(isEqual)
+
+	// Update expected?
+	if test.isUpdate {
+		// Normalize the actual content for potential writing
+		normalizedActualManifest, err := normalizeManifest(actualManifest)
+		if err != nil {
+			// Fall back to original content if normalization fails
+			normalizedActualManifest = actualManifest
+		}
+
+		// Check if we need to update due to semantic differences
+		hasSemanticChanges := !isEqual
+
+		// Check if we need to update due to formatting differences
+		hasFormattingChanges := expectedManifest != normalizedActualManifest
+
+		if hasSemanticChanges || hasFormattingChanges {
+			err = os.WriteFile(expectedPath, []byte(normalizedActualManifest), 0o644)
+			if err != nil {
+				return fmt.Errorf("writing updated expected.yaml file: %w", err)
+			}
+
+			// Set update type for builder reporting
+			if hasSemanticChanges {
+				test.SetUpdateType("semantic")
+			} else {
+				test.SetUpdateType("formatting")
+			}
+		} else {
+			test.SetUpdateType("none")
+		}
+	}
+
+	// Validate
+	err = validateManifest(test, release.Manifest)
+	if err != nil {
+		return fmt.Errorf("validating manifest: %w", err)
+	}
+
+	return nil
 }
 
-func (pb *PrintBuilder) StartTest(name string) {
-	pb.name = name
-	pb.isValid = true
-	pb.isSame = true
-	pb.updateType = ""
-	pb.differentItems = nil
-	pb.missingItems = nil
-	pb.extraItems = nil
-	pb.validationErrors = nil
-	pb.testCount++
-}
-
-func (pb *PrintBuilder) SetTestComparisonResult(isSame bool) {
+func (pb *Test) SetTestComparisonResult(isSame bool) {
 	pb.isSame = isSame
 }
 
-func (pb *PrintBuilder) SetUpdateType(updateType string) {
+func (pb *Test) SetUpdateType(updateType string) {
 	pb.updateType = updateType
-	if pb.isUpdate {
-		pb.updateCounts[updateType]++
-	}
+	// if pb.isUpdate {
+	// 	pb.updateCounts[updateType]++
+	// }
 }
 
-func (pb *PrintBuilder) AddValidationError(signature, error string) {
+func (pb *Test) AddValidationError(signature, error string) {
 	pb.validationErrors = append(pb.validationErrors, ValidationError{signature, error})
 	pb.isValid = false
 }
 
-func (pb *PrintBuilder) AddDifferentItem(source, expected, actual string) {
+func (pb *Test) AddDifferentItem(source, expected, actual string) {
 	pb.differentItems = append(pb.differentItems, Item{source, expected, actual})
 }
 
-func (pb *PrintBuilder) AddMissingItem(source, expected string) {
+func (pb *Test) AddMissingItem(source, expected string) {
 	pb.missingItems = append(pb.missingItems, Item{source, expected, ""})
 }
 
-func (pb *PrintBuilder) AddExtraItem(source, actual string) {
+func (pb *Test) AddExtraItem(source, actual string) {
 	pb.extraItems = append(pb.extraItems, Item{source, "", actual})
 }
 
-func (pb *PrintBuilder) AddIgnoredLine(line string) {
+func (pb *Test) AddIgnoredLine(line string) {
 	pb.ignoredLines = append(pb.ignoredLines, line)
 }
 
@@ -126,21 +208,21 @@ const (
 	separator3 = "———————"
 )
 
-func (pb *PrintBuilder) ShowValues(getValuesYaml func() (string, error)) {
+func (pb *Test) ShowValues(getValuesYaml func() (string, error)) {
 	pb.getValuesYaml = getValuesYaml
 }
 
-func (pb *PrintBuilder) EndTest() error {
+func (pb *Test) PrintResult(longestName int) error {
 	isSuccessful := pb.isSame && pb.isValid
-	if isSuccessful {
-		pb.successCount++
-	}
+	// if isSuccessful {
+	// 	pb.successCount++
+	// }
 
 	fmt.Println(separator1)
 	fmt.Printf("🧪 %s", pb.name)
 
 	// Add padding to align the results
-	padding := (pb.longestName - len(pb.name)) + 1
+	padding := (longestName - len(pb.name)) + 1
 	for i := 0; i < padding; i++ {
 		fmt.Print(" ")
 	}
@@ -287,51 +369,207 @@ func colorizeDiff(diff string) string {
 	return strings.TrimSpace(coloredDiff.String())
 }
 
-func (pb *PrintBuilder) EndAllTests() {
+func (pb *Test) IsSuccessful() bool {
+	return pb.isSame && pb.isValid
+}
+
+func (suite TestSuite) PrintSummary() {
 	fmt.Println(separator1)
-	if pb.testCount == 0 {
-		if pb.isUpdate {
+	defer fmt.Println(separator1)
+	if len(suite.Tests) == 0 {
+		if suite.IsUpdate {
 			fmt.Println("🤷 No expected files to update")
 		} else {
 			fmt.Println("🤷 No tests were run")
 		}
-	} else if pb.isUpdate {
-		// Update mode summary
-		updated := pb.updateCounts["semantic"] + pb.updateCounts["formatting"]
-		unchanged := pb.updateCounts["none"]
+		return
+	}
+	if suite.IsUpdate {
+		stats := suite.Updates()
+		updated := stats.Formatting + stats.Formatting
+		unchanged := stats.None
 
 		if updated == 0 {
-			fmt.Printf("👍 All %d expected files unchanged\n", pb.testCount)
-		} else if unchanged == 0 {
-			if pb.updateCounts["semantic"] > 0 && pb.updateCounts["formatting"] > 0 {
-				fmt.Printf("📝 Updated %d expected files (%d content changes, %d formatting normalization)\n",
-					updated, pb.updateCounts["semantic"], pb.updateCounts["formatting"])
-			} else if pb.updateCounts["semantic"] > 0 {
-				fmt.Printf("📝 Updated %d expected files with content changes\n", pb.updateCounts["semantic"])
-			} else {
-				fmt.Printf("🧹 Normalized formatting in %d expected files\n", pb.updateCounts["formatting"])
-			}
-		} else {
-			if pb.updateCounts["semantic"] > 0 && pb.updateCounts["formatting"] > 0 {
-				fmt.Printf("📝 Updated %d expected files (%d content changes, %d formatting normalization), %d unchanged\n",
-					updated, pb.updateCounts["semantic"], pb.updateCounts["formatting"], unchanged)
-			} else if pb.updateCounts["semantic"] > 0 {
-				fmt.Printf("📝 Updated %d expected files with content changes, %d unchanged\n", pb.updateCounts["semantic"], unchanged)
-			} else {
-				fmt.Printf("🧹 Normalized formatting in %d expected files, %d unchanged\n", pb.updateCounts["formatting"], unchanged)
-			}
+			fmt.Printf("👍 All %d expected files unchanged\n", suite.TotalLength())
+			return
 		}
-	} else {
-		// Run mode summary
-		if pb.IsSuccessful() {
-			fmt.Printf("🌈🦄⭐️  All %d tests passed\n", pb.testCount)
-		} else {
-			fmt.Printf("🔥👺🧨  %d tests failed out of %d\n", pb.testCount-pb.successCount, pb.testCount)
+		if unchanged == 0 {
+			if stats.Semantic > 0 && stats.Formatting > 0 {
+				fmt.Printf(
+					"📝 Updated %d expected files (%d content changes, %d formatting normalization)\n",
+					updated, stats.Semantic, stats.Formatting,
+				)
+				return
+			}
+			if stats.Semantic > 0 {
+				fmt.Printf("📝 Updated %d expected files with content changes\n", stats.Semantic)
+				return
+			}
+
+			fmt.Printf("🧹 Normalized formatting in %d expected files\n", stats.Formatting)
+			return
 		}
+
+		if stats.Semantic > 0 && stats.Formatting > 0 {
+			fmt.Printf(
+				"📝 Updated %d expected files (%d content changes, %d formatting normalization), %d unchanged\n",
+				updated, stats.Semantic, stats.Formatting, unchanged,
+			)
+			return
+		}
+
+		if stats.Semantic > 0 {
+			fmt.Printf("📝 Updated %d expected files with content changes, %d unchanged\n", stats.Semantic, unchanged)
+			return
+		}
+
+		fmt.Printf("🧹 Normalized formatting in %d expected files, %d unchanged\n", stats.Formatting, unchanged)
+		return
 	}
-	fmt.Println(separator1)
+
+	// Run mode summary
+	if suite.IsSuccessful() {
+		fmt.Printf("🌈🦄⭐️  All %d tests passed\n", suite.TotalLength())
+	} else {
+		fmt.Printf("🔥👺🧨  %d tests failed out of %d\n", suite.TotalLength()-suite.TotalSuccessful(), suite.TotalLength())
+	}
 }
 
-func (pb *PrintBuilder) IsSuccessful() bool {
-	return pb.successCount == pb.testCount
+type TestSuite struct {
+	IsUpdate bool
+	Tests    []*Test
+}
+
+func NewTestSuite(names []string, schema *cue.Value, isUpdate bool) *TestSuite {
+	return &TestSuite{
+		IsUpdate: isUpdate,
+		Tests: func() (tests []*Test) {
+			for _, name := range names {
+				tests = append(tests, &Test{
+					name:     name,
+					isUpdate: isUpdate,
+					isSame:   true,
+					isValid:  true,
+				})
+			}
+			return
+		}(),
+	}
+}
+
+func (suite TestSuite) TotalLength() int {
+	return len(suite.Tests)
+}
+
+func (suite TestSuite) TotalSuccessful() int {
+	var count int
+	for _, result := range suite.Tests {
+		if result.IsSuccessful() {
+			count++
+		}
+	}
+	return count
+}
+
+func (suite TestSuite) IsSuccessful() bool {
+	for _, result := range suite.Tests {
+		if !result.IsSuccessful() {
+			return false
+		}
+	}
+	return true
+}
+
+type UpdateStats struct {
+	None       int
+	Formatting int
+	Semantic   int
+}
+
+func (suite TestSuite) Updates() (stats UpdateStats) {
+	for _, result := range suite.Tests {
+		switch result.updateType {
+		case "formatting":
+			stats.Formatting++
+		case "semantic":
+			stats.Semantic++
+		default:
+			stats.None++
+		}
+	}
+	return
+}
+
+type HelmOptions struct {
+	Namespace    string
+	Release      string
+	ChartVersion string
+	AppVersion   string
+}
+
+type RunOptions struct {
+	RootFS         string
+	IgnorePatterns []string
+	Schema         *cue.Value
+	HelmOptions
+}
+
+func (suite TestSuite) Run(opts RunOptions) error {
+	longestName := func() int {
+		var max int
+		for _, test := range suite.Tests {
+			if len(test.name) > max {
+				max = len(test.name)
+			}
+		}
+		return max
+	}()
+
+	for _, test := range suite.Tests {
+		// Create action config
+		settings := cli.New()
+		actionConfig := new(action.Configuration)
+
+		if err := actionConfig.Init(settings.RESTClientGetter(), opts.Namespace, "memory", nil); err != nil {
+			log.Fatal(err)
+		}
+
+		// Create install action
+		installAction := action.NewInstall(actionConfig)
+		installAction.Namespace = opts.Namespace
+		installAction.ReleaseName = opts.Release
+		installAction.DryRun = true
+		installAction.IncludeCRDs = true
+		installAction.ClientOnly = true
+		installAction.Replace = true
+
+		// Load chart
+		chartPath, err := filepath.Abs(".")
+		if err != nil {
+			return fmt.Errorf("getting chart path: %w", err)
+		}
+		theChart, err := loader.Load(chartPath)
+		if err != nil {
+			return fmt.Errorf("loading chart: %w", err)
+		}
+
+		// Optionally override chart and app versions
+		if chartVersion := opts.ChartVersion; chartVersion != "" {
+			theChart.Metadata.Version = chartVersion
+		}
+		if appVersion := opts.AppVersion; appVersion != "" {
+			theChart.Metadata.AppVersion = appVersion
+		}
+
+		if err := test.Run(theChart, installAction, opts.RootFS, opts.IgnorePatterns, opts.Schema); err != nil {
+			return fmt.Errorf("running test %s: %w", test.name, err)
+		}
+
+		if err := test.PrintResult(longestName); err != nil {
+			return fmt.Errorf("failed to finalize test: %w", err)
+		}
+
+	}
+
+	return nil
 }

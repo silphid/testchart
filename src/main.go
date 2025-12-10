@@ -1,29 +1,20 @@
 package main
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 
 	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/cuecontext"
-	cueerrors "cuelang.org/go/cue/errors"
-
-	"helm.sh/helm/v3/pkg/chart"
-	"helm.sh/helm/v3/pkg/chartutil"
-	"helm.sh/helm/v3/pkg/cli"
 
 	"github.com/spf13/cobra"
 	"github.com/yannh/kubeconform/pkg/validator"
 	"gopkg.in/yaml.v2"
-	"helm.sh/helm/v3/pkg/action"
-	"helm.sh/helm/v3/pkg/chart/loader"
 )
 
 var (
@@ -123,207 +114,52 @@ func runTests(args []string, testPath, namespace, releaseName, chartVersion, app
 		}
 	}
 
-	builder := NewPrintBuilder(isUpdate)
-	builder.StartAllTests(testNames)
+	suite := NewTestSuite(testNames, schema, isUpdate)
 
-	// Create action config
-	settings := cli.New()
-	actionConfig := new(action.Configuration)
-
-	if err := actionConfig.Init(settings.RESTClientGetter(), namespace, "memory", nil); err != nil {
-		log.Fatal(err)
+	runOptions := RunOptions{
+		RootFS:         testPath,
+		IgnorePatterns: ignorePatterns,
+		Schema:         schema,
+		HelmOptions: HelmOptions{
+			Namespace:    namespace,
+			Release:      releaseName,
+			ChartVersion: chartVersion,
+			AppVersion:   appVersion,
+		},
 	}
 
-	// Create install action
-	installAction := action.NewInstall(actionConfig)
-	installAction.Namespace = namespace
-	installAction.ReleaseName = releaseName
-	installAction.DryRun = true
-	installAction.IncludeCRDs = true
-	installAction.ClientOnly = true
-	installAction.Replace = true
-
-	// Load chart
-	chartPath, err := filepath.Abs(".")
-	if err != nil {
-		return fmt.Errorf("getting chart path: %w", err)
-	}
-	theChart, err := loader.Load(chartPath)
-	if err != nil {
-		return fmt.Errorf("loading chart: %w", err)
+	if err := suite.Run(runOptions); err != nil {
+		return err
 	}
 
-	// Optionally override chart and app versions
-	if chartVersion != "" {
-		theChart.Metadata.Version = chartVersion
-	}
-	if appVersion != "" {
-		theChart.Metadata.AppVersion = appVersion
-	}
+	suite.PrintSummary()
 
-	for _, testName := range testNames {
-		err := runTest(builder, theChart, installAction, testPath, testName, isUpdate, ignorePatterns, schema)
-		if err != nil {
-			return fmt.Errorf("running test %s: %w", testName, err)
-		}
-	}
-
-	builder.EndAllTests()
-	if !builder.IsSuccessful() {
+	if !suite.IsSuccessful() {
 		os.Exit(1)
 	}
 	return nil
 }
 
-func runTest(builder Builder, theChart *chart.Chart, installAction *action.Install, testPath, testName string, isUpdate bool, ignorePatterns []string, schema *cue.Value) error {
-	builder.StartTest(testName)
-
-	// Load test values file
-	testValuesPath := filepath.Join(testPath, testName, "values.yaml")
-	testValues, err := loadValuesFile(testValuesPath)
-	if err != nil {
-		return fmt.Errorf("parsing test values file %q: %w", testValuesPath, err)
-	}
-
-	testValues = standardizeTree(testValues)
-
-	if schema != nil {
-		if err := schema.Unify(schema.Context().Encode(testValues)).Decode(&testValues); err != nil {
-			return fmt.Errorf("unifying values.yaml with schema:\n%w\n\n", ManyErr(cueerrors.Errors(err)))
-		}
-	}
-
-	// Show coalesced values
-	builder.ShowValues(func() (string, error) {
-		values, err := chartutil.ToRenderValues(theChart, testValues, chartutil.ReleaseOptions{Name: installAction.ReleaseName, Namespace: installAction.Namespace}, nil)
-		if err != nil {
-			return "", fmt.Errorf("coalescing test values onto chart default values: %w", err)
-		}
-		values = values["Values"].(chartutil.Values)
-		valuesYaml, err := yaml.Marshal(values)
-		if err != nil {
-			return "", fmt.Errorf("serializing values to yaml: %w", err)
-		}
-		return strings.TrimSpace(string(valuesYaml)), nil
-	})
-
-	// Render chart templates
-	release, err := installAction.Run(theChart, testValues)
-	if debugOutput != "" {
-		file, err := func() (io.WriteCloser, error) {
-			if debugOutput == "-" {
-				return NopWriterCloser{os.Stderr}, nil
-			}
-			return os.Create(debugOutput)
-		}()
-		if err == nil {
-			_, _ = file.Write([]byte(release.Manifest))
-			_ = file.Close()
-		}
-	}
-	if err != nil {
-		return err
-	}
-
-	// Combine regular manifests and hook manifests
-	var manifests bytes.Buffer
-	_, _ = fmt.Fprintln(&manifests, strings.TrimSpace(release.Manifest))
-	for _, m := range release.Hooks {
-		_, _ = fmt.Fprintf(&manifests, "---\n# Source: %s\n%s\n", m.Path, m.Manifest)
-	}
-
-	// Save actual.yaml for troubleshooting purposes
-	if saveActual {
-		actualPath := filepath.Join(testPath, testName, "actual.yaml")
-		err := os.WriteFile(actualPath, manifests.Bytes(), 0o644)
-		if err != nil {
-			return fmt.Errorf("writing actual.yaml file for debug purposes: %w", err)
-		}
-	}
-
-	// Read expected.yaml
-	expectedPath := filepath.Join(testPath, testName, "expected.yaml")
-	expectedBytes, err := os.ReadFile(expectedPath)
-	if err != nil {
-		return fmt.Errorf("reading expected.yaml file: %w", err)
-	}
-	expectedManifest := string(expectedBytes)
-
-	// Compile ignore patterns to regular expressions
-	ignoreExpressions, err := compileIgnorePatterns(ignorePatterns)
-	if err != nil {
-		return fmt.Errorf("compiling ignore patterns: %w", err)
-	}
-
-	// Compare manifests
-	actualManifest := manifests.String()
-	isEqual, err := compareManifests(builder, expectedManifest, actualManifest, ignoreExpressions)
-	if err != nil {
-		return fmt.Errorf("comparing manifests: %w\n\nactual manifest:\n%s\n\nexpected manifest:\n%s\n\nignore patterns:\n%v", err, actualManifest, expectedManifest, ignorePatterns)
-	}
-	builder.SetTestComparisonResult(isEqual)
-
-	// Update expected?
-	if isUpdate {
-		// Normalize the actual content for potential writing
-		normalizedActualManifest, err := normalizeManifest(actualManifest)
-		if err != nil {
-			// Fall back to original content if normalization fails
-			normalizedActualManifest = actualManifest
-		}
-
-		// Check if we need to update due to semantic differences
-		hasSemanticChanges := !isEqual
-
-		// Check if we need to update due to formatting differences
-		hasFormattingChanges := expectedManifest != normalizedActualManifest
-
-		if hasSemanticChanges || hasFormattingChanges {
-			err = os.WriteFile(expectedPath, []byte(normalizedActualManifest), 0o644)
-			if err != nil {
-				return fmt.Errorf("writing updated expected.yaml file: %w", err)
-			}
-
-			// Set update type for builder reporting
-			if hasSemanticChanges {
-				builder.SetUpdateType("semantic")
-			} else {
-				builder.SetUpdateType("formatting")
-			}
-		} else {
-			builder.SetUpdateType("none")
-		}
-	}
-
-	// Validate
-	err = validateManifest(builder, release.Manifest)
-	if err != nil {
-		return fmt.Errorf("validating manifest: %w", err)
-	}
-
-	return builder.EndTest()
-}
-
 // standardizeTree converts a tree of interface{} to a tree of map[string]interface{}
-func standardizeTree(node map[string]interface{}) map[string]interface{} {
-	return standardizeNode(node).(map[string]interface{})
+func standardizeTree(node map[string]any) map[string]any {
+	return standardizeNode(node).(map[string]any)
 }
 
-func standardizeNode(node interface{}) interface{} {
+func standardizeNode(node any) any {
 	switch v := node.(type) {
-	case map[interface{}]interface{}:
-		newNode := map[string]interface{}{}
+	case map[any]any:
+		newNode := map[string]any{}
 		for key, value := range v {
 			strKey := key.(string)
 			newNode[strKey] = standardizeNode(value)
 		}
 		return newNode
-	case map[string]interface{}:
+	case map[string]any:
 		for key, value := range v {
 			v[key] = standardizeNode(value)
 		}
 		return v
-	case []interface{}:
+	case []any:
 		for i, elem := range v {
 			v[i] = standardizeNode(elem)
 		}
@@ -333,13 +169,13 @@ func standardizeNode(node interface{}) interface{} {
 	}
 }
 
-func loadValuesFile(filePath string) (map[string]interface{}, error) {
+func loadValuesFile(filePath string) (map[string]any, error) {
 	yamlFile, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, err
 	}
 
-	var data map[string]interface{}
+	var data map[string]any
 	err = yaml.Unmarshal(yamlFile, &data)
 	if err != nil {
 		return nil, err
@@ -348,7 +184,7 @@ func loadValuesFile(filePath string) (map[string]interface{}, error) {
 	return data, nil
 }
 
-func validateManifest(builder Builder, manifest string) error {
+func validateManifest(test *Test, manifest string) error {
 	v, err := validator.New(nil, validator.Opts{Strict: true, IgnoreMissingSchemas: true})
 	if err != nil {
 		return fmt.Errorf("initializing validator: %w", err)
@@ -363,14 +199,14 @@ func validateManifest(builder Builder, manifest string) error {
 			if err != nil {
 				return fmt.Errorf("creating signature for invalid resource #%d: %w", i, err)
 			}
-			builder.AddValidationError(sig.QualifiedName(), res.Err.Error())
+			test.AddValidationError(sig.QualifiedName(), res.Err.Error())
 		}
 	}
 
 	return nil
 }
 
-func removeLinesMatchingPatterns(builder Builder, input string, ignorePatterns []*regexp.Regexp) string {
+func removeLinesMatchingPatterns(test *Test, input string, ignorePatterns []*regexp.Regexp) string {
 	lines := strings.Split(input, "\n")
 	var filteredLines []string
 	for _, line := range lines {
@@ -382,7 +218,7 @@ func removeLinesMatchingPatterns(builder Builder, input string, ignorePatterns [
 			}
 		}
 		if match {
-			builder.AddIgnoredLine(line)
+			test.AddIgnoredLine(line)
 		} else {
 			filteredLines = append(filteredLines, line)
 		}
@@ -402,7 +238,7 @@ func compileIgnorePatterns(ignoreExpressions []string) ([]*regexp.Regexp, error)
 	return ignorePatterns, nil
 }
 
-func compareManifests(builder Builder, expectedManifest, actualManifest string, ignoreExpressions []*regexp.Regexp) (bool, error) {
+func compareManifests(builder *Test, expectedManifest, actualManifest string, ignoreExpressions []*regexp.Regexp) (bool, error) {
 	expected := splitManifest(expectedManifest)
 	actual := splitManifest(actualManifest)
 	areEqual := true
