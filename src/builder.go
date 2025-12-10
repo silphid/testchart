@@ -592,11 +592,11 @@ func (suite TestSuite) Run(opts RunOptions) error {
 		}
 	}()
 
-	for i := range suite.Tests {
+	for _, result := range results {
 		select {
 		case err := <-e:
 			return err
-		case test := <-results[i]:
+		case test := <-result:
 			if err := test.PrintResult(longestName); err != nil {
 				return fmt.Errorf("failed to finalize test: %w", err)
 			}
