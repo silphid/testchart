@@ -303,10 +303,10 @@ func splitManifest(buffer string) map[string]string {
 	delimiter := "---\n# Source: "
 
 	// Split the buffer into chunks using the delimiter
-	chunks := strings.Split(buffer, delimiter)
+	chunks := strings.SplitSeq(buffer, delimiter)
 
 	// Process each chunk
-	for _, chunk := range chunks {
+	for chunk := range chunks {
 		// Remove leading and trailing whitespaces
 		chunk = strings.TrimSpace(chunk)
 
