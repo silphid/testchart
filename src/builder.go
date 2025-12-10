@@ -38,13 +38,10 @@ type Test struct {
 	differentItems, missingItems, extraItems []Item
 	validationErrors                         []ValidationError
 	getValuesYaml                            func() (string, error)
-	// updateCounts                             map[string]int // Track update types: "none", "formatting", "semantic"
-	// longestName  int
-	ignoredLines []string
+	ignoredLines                             []string
 }
 
 func (test *Test) Run(theChart *chart.Chart, installAction *action.Install, rootPath string, ignorePatterns []string, schema *cue.Value) error {
-	// Load test values file
 	testValuesPath := filepath.Join(rootPath, test.name, "values.yaml")
 	testValues, err := loadValuesFile(testValuesPath)
 	if err != nil {
@@ -59,7 +56,6 @@ func (test *Test) Run(theChart *chart.Chart, installAction *action.Install, root
 		}
 	}
 
-	// Show coalesced values
 	test.ShowValues(func() (string, error) {
 		values, err := chartutil.ToRenderValues(theChart, testValues, chartutil.ReleaseOptions{Name: installAction.ReleaseName, Namespace: installAction.Namespace}, nil)
 		if err != nil {
@@ -73,7 +69,6 @@ func (test *Test) Run(theChart *chart.Chart, installAction *action.Install, root
 		return strings.TrimSpace(string(valuesYaml)), nil
 	})
 
-	// Render chart templates
 	release, err := installAction.Run(theChart, testValues)
 	if debugOutput != "" {
 		file, err := func() (io.WriteCloser, error) {
@@ -170,36 +165,33 @@ func (test *Test) Run(theChart *chart.Chart, installAction *action.Install, root
 	return nil
 }
 
-func (pb *Test) SetTestComparisonResult(isSame bool) {
-	pb.isSame = isSame
+func (test *Test) SetTestComparisonResult(isSame bool) {
+	test.isSame = isSame
 }
 
-func (pb *Test) SetUpdateType(updateType string) {
-	pb.updateType = updateType
-	// if pb.isUpdate {
-	// 	pb.updateCounts[updateType]++
-	// }
+func (test *Test) SetUpdateType(updateType string) {
+	test.updateType = updateType
 }
 
-func (pb *Test) AddValidationError(signature, error string) {
-	pb.validationErrors = append(pb.validationErrors, ValidationError{signature, error})
-	pb.isValid = false
+func (test *Test) AddValidationError(signature, error string) {
+	test.validationErrors = append(test.validationErrors, ValidationError{signature, error})
+	test.isValid = false
 }
 
-func (pb *Test) AddDifferentItem(source, expected, actual string) {
-	pb.differentItems = append(pb.differentItems, Item{source, expected, actual})
+func (test *Test) AddDifferentItem(source, expected, actual string) {
+	test.differentItems = append(test.differentItems, Item{source, expected, actual})
 }
 
-func (pb *Test) AddMissingItem(source, expected string) {
-	pb.missingItems = append(pb.missingItems, Item{source, expected, ""})
+func (test *Test) AddMissingItem(source, expected string) {
+	test.missingItems = append(test.missingItems, Item{source, expected, ""})
 }
 
-func (pb *Test) AddExtraItem(source, actual string) {
-	pb.extraItems = append(pb.extraItems, Item{source, "", actual})
+func (test *Test) AddExtraItem(source, actual string) {
+	test.extraItems = append(test.extraItems, Item{source, "", actual})
 }
 
-func (pb *Test) AddIgnoredLine(line string) {
-	pb.ignoredLines = append(pb.ignoredLines, line)
+func (test *Test) AddIgnoredLine(line string) {
+	test.ignoredLines = append(test.ignoredLines, line)
 }
 
 const (
@@ -208,28 +200,28 @@ const (
 	separator3 = "———————"
 )
 
-func (pb *Test) ShowValues(getValuesYaml func() (string, error)) {
-	pb.getValuesYaml = getValuesYaml
+func (test *Test) ShowValues(getValuesYaml func() (string, error)) {
+	test.getValuesYaml = getValuesYaml
 }
 
-func (pb *Test) PrintResult(longestName int) error {
-	isSuccessful := pb.isSame && pb.isValid
+func (test *Test) PrintResult(longestName int) error {
+	isSuccessful := test.isSame && test.isValid
 	// if isSuccessful {
 	// 	pb.successCount++
 	// }
 
 	fmt.Println(separator1)
-	fmt.Printf("🧪 %s", pb.name)
+	fmt.Printf("🧪 %s", test.name)
 
 	// Add padding to align the results
-	padding := (longestName - len(pb.name)) + 1
-	for i := 0; i < padding; i++ {
+	padding := (longestName - len(test.name)) + 1
+	for range padding {
 		fmt.Print(" ")
 	}
 
 	if isSuccessful {
-		if pb.isUpdate {
-			switch pb.updateType {
+		if test.isUpdate {
+			switch test.updateType {
 			case "none":
 				fmt.Println("👍 Nothing to update in expected file")
 			case "formatting":
@@ -241,8 +233,8 @@ func (pb *Test) PrintResult(longestName int) error {
 			fmt.Println("✅  Passed")
 		}
 	} else {
-		if pb.isUpdate {
-			switch pb.updateType {
+		if test.isUpdate {
+			switch test.updateType {
 			case "semantic":
 				fmt.Println("📝 Updated expected file with content changes")
 			case "formatting":
@@ -252,7 +244,7 @@ func (pb *Test) PrintResult(longestName int) error {
 			}
 		} else {
 			fmt.Printf("💔 Failed")
-			if !pb.isValid {
+			if !test.isValid {
 				fmt.Printf("👮 Invalid")
 			}
 			fmt.Printf("\n")
@@ -260,10 +252,10 @@ func (pb *Test) PrintResult(longestName int) error {
 	}
 
 	sections := 0
-	if !pb.isSame {
+	if !test.isSame {
 		fmt.Println(separator2)
-		if len(pb.differentItems) > 0 {
-			for i, differentItem := range pb.differentItems {
+		if len(test.differentItems) > 0 {
+			for i, differentItem := range test.differentItems {
 				if i > 0 {
 					fmt.Println(separator3)
 				}
@@ -276,11 +268,11 @@ func (pb *Test) PrintResult(longestName int) error {
 			}
 			sections++
 		}
-		if len(pb.extraItems) > 0 {
+		if len(test.extraItems) > 0 {
 			if sections > 0 {
 				fmt.Println(separator3)
 			}
-			for i, extraItem := range pb.extraItems {
+			for i, extraItem := range test.extraItems {
 				if i > 0 {
 					fmt.Println(separator3)
 				}
@@ -288,11 +280,11 @@ func (pb *Test) PrintResult(longestName int) error {
 			}
 			sections++
 		}
-		if len(pb.missingItems) > 0 {
+		if len(test.missingItems) > 0 {
 			if sections > 0 {
 				fmt.Println(separator3)
 			}
-			for i, missingItem := range pb.missingItems {
+			for i, missingItem := range test.missingItems {
 				if i > 0 {
 					fmt.Println(separator3)
 				}
@@ -302,13 +294,13 @@ func (pb *Test) PrintResult(longestName int) error {
 		}
 	}
 
-	if !pb.isValid {
+	if !test.isValid {
 		if sections < 1 {
 			fmt.Println(separator2)
 		} else {
 			fmt.Println(separator3)
 		}
-		for i, validationError := range pb.validationErrors {
+		for i, validationError := range test.validationErrors {
 			if i > 0 {
 				fmt.Println(separator3)
 			}
@@ -318,13 +310,13 @@ func (pb *Test) PrintResult(longestName int) error {
 	}
 
 	// Show values for all or only failed tests
-	if showAllValues || (showValues && (!pb.isSame || !pb.isValid)) {
+	if showAllValues || (showValues && (!test.isSame || !test.isValid)) {
 		if sections < 1 {
 			fmt.Println(separator2)
 		} else {
 			fmt.Println(separator3)
 		}
-		valuesYaml, err := pb.getValuesYaml()
+		valuesYaml, err := test.getValuesYaml()
 		if err != nil {
 			return fmt.Errorf("failed to get values yaml: %w", err)
 		}
@@ -332,12 +324,12 @@ func (pb *Test) PrintResult(longestName int) error {
 		fmt.Println(valuesYaml)
 	}
 
-	if len(pb.ignoredLines) > 0 {
+	if len(test.ignoredLines) > 0 {
 		fmt.Println(separator3)
-		for _, ignoredLine := range pb.ignoredLines {
+		for _, ignoredLine := range test.ignoredLines {
 			fmt.Printf("🙈 Ignored line: %q\n", ignoredLine)
 		}
-		pb.ignoredLines = []string{}
+		test.ignoredLines = []string{}
 	}
 	return nil
 }
@@ -351,8 +343,7 @@ const (
 
 func colorizeDiff(diff string) string {
 	var coloredDiff strings.Builder
-	lines := strings.Split(diff, "\n")
-	for _, line := range lines {
+	for line := range strings.SplitSeq(diff, "\n") {
 		if strings.HasPrefix(line, "-") {
 			coloredDiff.WriteString(green)
 		} else if strings.HasPrefix(line, "+") {
@@ -369,8 +360,8 @@ func colorizeDiff(diff string) string {
 	return strings.TrimSpace(coloredDiff.String())
 }
 
-func (pb *Test) IsSuccessful() bool {
-	return pb.isSame && pb.isValid
+func (test *Test) IsSuccessful() bool {
+	return test.isSame && test.isValid
 }
 
 func (suite TestSuite) PrintSummary() {
