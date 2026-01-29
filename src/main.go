@@ -25,6 +25,7 @@ var (
 	showValues    = false
 	showAllValues = false
 	debugOutput   = ""
+	normalize     bool
 )
 
 func main() {
@@ -53,6 +54,7 @@ func main() {
 	rootCmd.PersistentFlags().StringSliceVarP(&ignorePatterns, "ignore", "i", []string{}, "Regex specifying lines to ignore (can be specified multiple times)")
 	rootCmd.PersistentFlags().StringVar(&debugOutput, "debug", "", "location to render failed install output manifests for debugging")
 	rootCmd.PersistentFlags().IntVarP(&concurrency, "concurrency", "c", runtime.GOMAXPROCS(0), "test run concurrency")
+	rootCmd.PersistentFlags().BoolVar(&normalize, "normalize", true, "normalize output. Disabling allows you to view raw helm templating.")
 
 	runCmd := &cobra.Command{
 		Use:   "run [test1 test2 ...]",
@@ -274,21 +276,23 @@ func compareManifests(builder *Test, expectedManifest, actualManifest string, ig
 	// Find different items
 	for source, expectedContent := range expected {
 		if actualContent, ok := actual[source]; ok {
-			normalizedExpected, err := normalizeYAML(expectedContent)
-			if err != nil {
-				return false, fmt.Errorf("normalizing expected content: %w:\n%s", err, expectedContent)
+			if normalize {
+				var err error
+				expectedContent, err = normalizeYAML(expectedContent)
+				if err != nil {
+					return false, fmt.Errorf("normalizing expected content: %w:\n%s", err, expectedContent)
+				}
+				actualContent, err = normalizeYAML(actualContent)
+				if err != nil {
+					return false, fmt.Errorf("normalizing actual content: %w:\n%s", err, actualContent)
+				}
 			}
 
-			normalizedActual, err := normalizeYAML(actualContent)
-			if err != nil {
-				return false, fmt.Errorf("normalizing actual content: %w:\n%s", err, actualContent)
-			}
-
-			sanitizedExpected := removeLinesMatchingPatterns(builder, normalizedExpected, ignoreExpressions)
-			sanitizedActual := removeLinesMatchingPatterns(builder, normalizedActual, ignoreExpressions)
+			sanitizedExpected := removeLinesMatchingPatterns(builder, expectedContent, ignoreExpressions)
+			sanitizedActual := removeLinesMatchingPatterns(builder, actualContent, ignoreExpressions)
 
 			if sanitizedExpected != sanitizedActual {
-				builder.AddDifferentItem(source, normalizedExpected, normalizedActual)
+				builder.AddDifferentItem(source, expectedContent, actualContent)
 				areEqual = false
 			}
 			delete(actual, source)
