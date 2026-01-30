@@ -126,33 +126,40 @@ func (test *Test) Run(theChart *chart.Chart, installAction *action.Install, root
 
 	// Update expected?
 	if test.isUpdate {
-		// Normalize the actual content for potential writing
-		normalizedActualManifest, err := normalizeManifest(actualManifest)
-		if err != nil {
-			// Fall back to original content if normalization fails
-			normalizedActualManifest = actualManifest
-		}
-
-		// Check if we need to update due to semantic differences
-		hasSemanticChanges := !isEqual
-
-		// Check if we need to update due to formatting differences
-		hasFormattingChanges := expectedManifest != normalizedActualManifest
-
-		if hasSemanticChanges || hasFormattingChanges {
-			err = os.WriteFile(expectedPath, []byte(normalizedActualManifest), 0o644)
-			if err != nil {
+		if !normalize && !isEqual {
+			if err := os.WriteFile(expectedPath, []byte(actualManifest), 0o644); err != nil {
 				return fmt.Errorf("writing updated expected.yaml file: %w", err)
 			}
-
-			// Set update type for builder reporting
-			if hasSemanticChanges {
-				test.SetUpdateType("semantic")
-			} else {
-				test.SetUpdateType("formatting")
-			}
+			test.SetUpdateType("semantic")
 		} else {
-			test.SetUpdateType("none")
+			// Normalize the actual content for potential writing
+			normalizedActualManifest, err := normalizeManifest(actualManifest)
+			if err != nil {
+				// Fall back to original content if normalization fails
+				normalizedActualManifest = actualManifest
+			}
+
+			// Check if we need to update due to semantic differences
+			hasSemanticChanges := !isEqual
+
+			// Check if we need to update due to formatting differences
+			hasFormattingChanges := expectedManifest != normalizedActualManifest
+
+			if hasSemanticChanges || hasFormattingChanges {
+				err = os.WriteFile(expectedPath, []byte(normalizedActualManifest), 0o644)
+				if err != nil {
+					return fmt.Errorf("writing updated expected.yaml file: %w", err)
+				}
+
+				// Set update type for builder reporting
+				if hasSemanticChanges {
+					test.SetUpdateType("semantic")
+				} else {
+					test.SetUpdateType("formatting")
+				}
+			} else {
+				test.SetUpdateType("none")
+			}
 		}
 	}
 
