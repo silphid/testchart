@@ -41,7 +41,7 @@ type Test struct {
 	ignoredLines                             []string
 }
 
-func (test *Test) Run(theChart *chart.Chart, installAction *action.Install, rootPath string, ignorePatterns []string, schema *cue.Value) error {
+func (test *Test) Run(theChart *chart.Chart, installAction *action.Install, rootPath string, ignorePatterns []string, schema *cue.Value, cacheDir string) error {
 	testValuesPath := filepath.Join(rootPath, test.name, "values.yaml")
 	testValues, err := loadValuesFile(testValuesPath)
 	if err != nil {
@@ -164,7 +164,7 @@ func (test *Test) Run(theChart *chart.Chart, installAction *action.Install, root
 	}
 
 	// Validate
-	err = validateManifest(test, release.Manifest)
+	err = validateManifest(test, release.Manifest, cacheDir)
 	if err != nil {
 		return fmt.Errorf("validating manifest: %w", err)
 	}
@@ -510,6 +510,7 @@ type RunOptions struct {
 	IgnorePatterns []string
 	Schema         *cue.Value
 	Concurrency    int
+	CacheDir       string
 	HelmOptions
 }
 
@@ -580,7 +581,7 @@ func (suite TestSuite) Run(opts RunOptions) error {
 					theChart.Metadata.AppVersion = appVersion
 				}
 
-				if err := test.Run(theChart, installAction, opts.RootFS, opts.IgnorePatterns, opts.Schema); err != nil {
+				if err := test.Run(theChart, installAction, opts.RootFS, opts.IgnorePatterns, opts.Schema, opts.CacheDir); err != nil {
 					e <- fmt.Errorf("running test %s: %w", test.name, err)
 					return
 				}
