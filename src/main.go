@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -28,6 +29,17 @@ var (
 	normalize     bool
 )
 
+func defaultCacheDir() string {
+	if dir := os.Getenv("XDG_CACHE_HOME"); dir != "" {
+		return filepath.Join(dir, "testchart")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".cache", "testchart")
+}
+
 func main() {
 	var testPath string
 	var namespace string
@@ -35,6 +47,7 @@ func main() {
 	var chartVersion string
 	var appVersion string
 	var concurrency int
+	var cacheDir string
 	isUpdate := false
 	var ignorePatterns []string
 
@@ -55,13 +68,14 @@ func main() {
 	rootCmd.PersistentFlags().StringVar(&debugOutput, "debug", "", "location to render failed install output manifests for debugging")
 	rootCmd.PersistentFlags().IntVarP(&concurrency, "concurrency", "c", runtime.GOMAXPROCS(0), "test run concurrency")
 	rootCmd.PersistentFlags().BoolVar(&normalize, "normalize", true, "normalize output. Disabling allows you to view raw helm templating.")
+	rootCmd.PersistentFlags().StringVar(&cacheDir, "cache-dir", defaultCacheDir(), "directory for caching downloaded schemas (set to empty string to disable)")
 
 	runCmd := &cobra.Command{
 		Use:   "run [test1 test2 ...]",
 		Short: "Run unit tests",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runTests(args, testPath, namespace, release, chartVersion, appVersion, isUpdate, ignorePatterns, concurrency)
+			return runTests(args, testPath, namespace, release, chartVersion, appVersion, isUpdate, ignorePatterns, concurrency, cacheDir)
 		},
 	}
 
@@ -71,7 +85,7 @@ func main() {
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			isUpdate = true
-			return runTests(args, testPath, namespace, release, chartVersion, appVersion, isUpdate, ignorePatterns, concurrency)
+			return runTests(args, testPath, namespace, release, chartVersion, appVersion, isUpdate, ignorePatterns, concurrency, cacheDir)
 		},
 	}
 
@@ -93,7 +107,7 @@ func main() {
 	}
 }
 
-func runTests(args []string, testPath, namespace, releaseName, chartVersion, appVersion string, isUpdate bool, ignorePatterns []string, concurrency int) error {
+func runTests(args []string, testPath, namespace, releaseName, chartVersion, appVersion string, isUpdate bool, ignorePatterns []string, concurrency int, cacheDir string) error {
 	if _, err := os.Stat(testPath); os.IsNotExist(err) {
 		fmt.Println("No tests found")
 		return nil
@@ -127,6 +141,7 @@ func runTests(args []string, testPath, namespace, releaseName, chartVersion, app
 		IgnorePatterns: ignorePatterns,
 		Schema:         schema,
 		Concurrency:    concurrency,
+		CacheDir:       cacheDir,
 		HelmOptions: HelmOptions{
 			Namespace:    namespace,
 			Release:      releaseName,
@@ -196,8 +211,13 @@ func loadValuesFile(filePath string) (map[string]any, error) {
 	return data, nil
 }
 
-func validateManifest(test *Test, manifest string) error {
-	v, err := validator.New(nil, validator.Opts{Strict: true, IgnoreMissingSchemas: true})
+func validateManifest(test *Test, manifest string, cacheDir string) error {
+	if cacheDir != "" {
+		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+			return fmt.Errorf("creating cache directory: %w", err)
+		}
+	}
+	v, err := validator.New(nil, validator.Opts{Strict: true, IgnoreMissingSchemas: true, Cache: cacheDir})
 	if err != nil {
 		return fmt.Errorf("initializing validator: %w", err)
 	}
